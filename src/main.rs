@@ -4,14 +4,14 @@ use std::collections::HashSet;
 use std::convert::Into;
 use std::default::Default;
 use std::fmt;
+use std::fs::File;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::io::prelude::*;
 use std::iter::FromIterator;
+use std::path::Path;
 use std::rc::Rc;
 use std::str;
-
-use std::fs::File;
-use std::io::prelude::*;
-use std::path::Path;
+use std::time::Instant;
 
 #[allow(missing_copy_implementations)]
 struct FnvHasher(u64);
@@ -61,6 +61,15 @@ impl fmt::Debug for Tok {
 struct Entry<Id, T> {
     id: Id,
     entry: T,
+}
+
+fn get_entry<'a, Id: Ord, T>(entries: &'a [Entry<Id, T>], t: &Id) -> Option<&'a Entry<Id, T>> {
+    unsafe {
+        match entries.binary_search_by(|e| e.id.cmp(t)) {
+            Ok(idx) => Some(entries.get_unchecked(idx)),
+            _ => None,
+        }
+    }
 }
 
 impl<T, Id: PartialEq> PartialEq for Entry<Id, T> {
@@ -115,6 +124,7 @@ type DualIter<A: Iterator, B: Iterator> =
 
 impl FuzzyEntry {
     fn new(s: String) -> FuzzyEntry {
+        /*
         let mut bow = HashMap::with_capacity_and_hasher(s.len() * 8, FnvBuildHasher::default());
         {
             let mut updt = |t: Tok| {
@@ -130,8 +140,13 @@ impl FuzzyEntry {
                 entry: freq,
             });
         }
+        vbow.sort(); */
+        let mut vbow: Vec<Entry<Tok, u8>> = Vec::with_capacity(4);
+        {
+            let mut updt = |t: Tok| vbow.push(Entry { id: t, entry: 0 });
+            update_gram(&s.as_bytes(), &mut updt);
+        }
         vbow.sort();
-
         let r = FuzzyEntry {
             string: s,
             bow: vbow,
@@ -194,6 +209,7 @@ impl FuzzyLookup {
         toks.sort();
         //TODO randomize order of the Vec<u32>'s in toks??
         println!("w t {:?}", (words.len(), toks.len()));
+
         let r = FuzzyLookup {
             words: words,
             toks: toks,
@@ -203,31 +219,43 @@ impl FuzzyLookup {
     }
 
     fn lookup(&self, word: String) -> Option<(String, f64)> {
-        let word_info = FuzzyEntry::new(word);
+        let mut word_info = FuzzyEntry::new(word);
+        word_info.bow.sort_unstable_by(|a, b| {
+            let a_freq = get_entry(&self.toks, &a.id)
+                .map(|e| e.entry.len())
+                .unwrap_or(0);
+            let b_freq = get_entry(&self.toks, &b.id)
+                .map(|e| e.entry.len())
+                .unwrap_or(0);
+            a_freq.cmp(&b_freq)
+        });
+
         //println!("{:?}", word_info);
-        let mut freqs = HashMap::new(); //with_hasher(FnvHasher::default());
+        let mut freqs: HashMap<u32, i32> = HashMap::new(); //with_hasher(FnvHasher::default());
+        let mut n_times = 0;
         for t_f in word_info.bow.iter() {
-            match self.toks.binary_search(&Entry {
-                id: t_f.id,
-                entry: Vec::new(),
-            }) {
-                //TODO don't allocate a new vec each time
-                Ok(idx) => {
+            if n_times > 10 {
+                break;
+            }
+            match get_entry(&self.toks, &t_f.id) {
+                Some(e) => {
                     //println!("idx {:?}", idx);
-                    for word_idx in self.toks[idx].entry.iter() {
-                        *freqs.entry(word_idx).or_insert(0) += 1;
+                    for word_idx in e.entry.iter() {
+                        *freqs.entry(*word_idx).or_insert(0) += 1;
+                        n_times += 1;
                     }
                 }
                 _ => {}
             }
         }
+        //println!("n_times {:?}", n_times);
         let n_toks = word_info.bow.len() as f64;
         let mut r: Option<(String, f64)> = None;
         let mut max_so_far: f64 = 0.0;
         //println!("{:?}", freqs);
         for (idx, freq) in freqs.into_iter() {
             //println!("{:?}", (idx, freq));
-            let word_b_info = &self.words[*idx as usize];
+            let word_b_info = &self.words[idx as usize];
             let n_b_toks = word_b_info.bow.len() as f64;
             let jaccard = ((freq * 2) as f64) / (n_toks + n_b_toks);
             if jaccard.gt(&max_so_far) {
@@ -277,15 +305,36 @@ fn main() {
     for line in s.lines() {
         let line_words: Vec<_> = line.split("|").collect();
         if line_words.len() > 2 {
-            if line_words[1] == "MI" {
+            if true {
+                //line_words[1] == "MI" {
                 words.insert(line_words[0].to_owned());
             }
         }
     }
 
-    let lookup = FuzzyLookup::new(words.into_iter());
-    for _ in 0..10000 {
-        i += lookup.lookup("GRADN RAPIDS".to_owned()).unwrap().1;
+    let lookup = FuzzyLookup::new(words.iter().map(|a| a.to_owned()));
+    let mut wins = 0;
+    let mut n_cities_done: usize = 0;
+    let n_cities = 10000;
+    let start = Instant::now();
+    for city in words.iter().take(n_cities) {
+        n_cities_done += 1;
+        let mut messed_up: String = "A".to_owned();
+        messed_up.push_str(city);
+        let e = FuzzyEntry::new(messed_up);
+        /*match lookup.lookup(messed_up) {
+            Some((r, _)) => {
+                if &r == city {
+                    wins += 1;
+                }
+            }
+            _ => {}
+        } */
     }
-    println!("{:?}", lookup.lookup("GRAN".to_owned()));
+    let elapsed = start.elapsed().as_micros();
+    println!("TIME EACH: {:?}", elapsed / n_cities_done as u128);
+    println!(
+        "{:?}",
+        (wins, n_cities_done, (wins as f32) / (n_cities_done as f32))
+    );
 }
