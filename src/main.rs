@@ -8,11 +8,11 @@ use std::fs::File;
 use std::hash::{BuildHasherDefault, Hasher};
 use std::io::prelude::*;
 use std::iter::FromIterator;
+use std::mem;
 use std::path::Path;
 use std::rc::Rc;
 use std::str;
 use std::time::Instant;
-
 #[allow(missing_copy_implementations)]
 struct FnvHasher(u64);
 
@@ -106,44 +106,119 @@ where
     }
 }
 
+#[derive(Copy, Clone, Debug)]
+enum AndOrOr<T> {
+    Left(T),
+    Right(T),
+    Both(T, T),
+}
+
+struct DualIter<L, T, R> {
+    left: L,
+    right: R,
+    item: Option<AndOrOr<T>>,
+}
+
+impl<L, T, R> DualIter<L, T, R>
+where
+    L: Iterator<Item = T>,
+    R: Iterator<Item = T>,
+{
+    fn new(mut l: L, mut r: R) -> DualIter<L, T, R> {
+        let maybe_item = Self::next_left_right(&mut l, &mut r);
+        DualIter {
+            left: l,
+            right: r,
+            item: maybe_item,
+        }
+    }
+
+    fn next_left_right(l: &mut L, r: &mut R) -> Option<AndOrOr<T>> {
+        match l.next() {
+            Some(x) => Some(AndOrOr::Left(x)),
+            None => match r.next() {
+                Some(x) => Some(AndOrOr::Left(x)),
+                None => None,
+            },
+        }
+    }
+}
+
+impl<L, T, R> Iterator for DualIter<L, T, R>
+where
+    T: Ord,
+    L: Iterator<Item = T>,
+    R: Iterator<Item = T>,
+{
+    type Item = AndOrOr<T>;
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let mut self_item = None;
+        //let mut ret = None;
+        mem::swap(&mut self_item, &mut self.item);
+        match self_item {
+            Some(AndOrOr::Left(l)) => match self.right.next() {
+                None => {
+                    return Some(AndOrOr::Left(l));
+                }
+                Some(r) => {
+                    if l < r {
+                        self.item = Some(AndOrOr::Right(r));
+                        return Some(AndOrOr::Left(l));
+                    } else if l == r {
+                        self.item = DualIter::next_left_right(&mut self.left, &mut self.right);
+                        return Some(AndOrOr::Both(l, r));
+                    } else {
+                        self.item = Some(AndOrOr::Left(l));
+                        return Some(AndOrOr::Right(r));
+                    }
+                }
+            },
+            Some(AndOrOr::Right(r)) => match self.left.next() {
+                None => {
+                    return Some(AndOrOr::Right(r));
+                }
+                Some(l) => {
+                    if l < r {
+                        self.item = Some(AndOrOr::Right(r));
+                        return Some(AndOrOr::Left(l));
+                    } else if l == r {
+                        self.item = DualIter::next_left_right(&mut self.left, &mut self.right);
+                        return Some(AndOrOr::Both(l, r));
+                    } else {
+                        self.item = Some(AndOrOr::Left(l));
+                        return Some(AndOrOr::Right(r));
+                    }
+                }
+            },
+            Some(AndOrOr::Both(l, r)) => {
+                self.item = DualIter::next_left_right(&mut self.left, &mut self.right);
+                return Some(AndOrOr::Both(l, r));
+            }
+            None => match DualIter::next_left_right(&mut self.left, &mut self.right) {
+                Some(x) => {
+                    self.item = Some(x);
+                    return self.next();
+                }
+                None => {
+                    return None;
+                }
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
 struct FuzzyEntry {
     string: String,
-    bow: Vec<Entry<Tok, u8>>, //FnvHashMap<Tok, u8>,
+    bow: Vec<Tok>, //FnvHashMap<Tok, u8>,
 }
-
-struct DualIterX<A, Av, B, Bv> {
-    iter_a: A,
-    iter_b: B,
-    val_a: Option<Av>,
-    val_b: Option<Bv>,
-}
-
-type DualIter<A: Iterator, B: Iterator> =
-    DualIterX<A, <A as Iterator>::Item, B, <B as Iterator>::Item>;
 
 impl FuzzyEntry {
     fn new(s: String) -> FuzzyEntry {
-        /*
-        let mut bow = HashMap::with_capacity_and_hasher(s.len() * 8, FnvBuildHasher::default());
+        let mut vbow: Vec<Tok> = Vec::with_capacity(4);
         {
-            let mut updt = |t: Tok| {
-                let n: u8 = *bow.get(&t).unwrap_or(&0);
-                bow.insert(t, n + 1);
-            };
-            update_gram(&s.as_bytes(), &mut updt);
-        }
-        let mut vbow: Vec<Entry<Tok, u8>> = Vec::with_capacity(bow.len());
-        for (tok, freq) in bow.into_iter() {
-            vbow.push(Entry {
-                id: tok,
-                entry: freq,
-            });
-        }
-        vbow.sort(); */
-        let mut vbow: Vec<Entry<Tok, u8>> = Vec::with_capacity(4);
-        {
-            let mut updt = |t: Tok| vbow.push(Entry { id: t, entry: 0 });
+            let mut updt = |t: Tok| vbow.push(t);
             update_gram(&s.as_bytes(), &mut updt);
         }
         vbow.sort();
@@ -155,26 +230,26 @@ impl FuzzyEntry {
         r
     }
 
-    /*
     #[inline(always)]
     fn sim(&self, other: &Self) -> f64 {
-        if self.bow.len() == 0 {
-            return 0.0;
-        }
-        let mut n = 0.0;
-        let mut d = 0.0;
-        for (tok, freq_a) in &self.bow {
-            let freq_b = other.bow.get(&tok).unwrap_or(&0);
-            n += (*cmp::min(freq_a, freq_b) as f64);
-            d += (*cmp::max(freq_a, freq_b) as f64);
-        }
-        for (tok, freq) in &other.bow {
-            if !self.bow.contains_key(&tok) {
-                d += (*freq as f64);
+        let mut n = 0;
+        let mut d = 0;
+        for x in DualIter::new(self.bow.iter(), other.bow.iter()) {
+            match x {
+                AndOrOr::Both(_, _) => {
+                    d += 1;
+                    n += 1;
+                }
+                _ => {
+                    d += 1;
+                }
             }
         }
-        (n / d).sqrt()
-    }*/
+        if n == 0 || d == 0 {
+            return 0.0;
+        }
+        (n as f64 / d as f64) //.sqrt()
+    }
 }
 #[derive(Clone, Debug)]
 struct FuzzyLookup {
@@ -192,8 +267,8 @@ impl FuzzyLookup {
         let mut toks_hm: HashMap<Tok, Vec<u32>> = HashMap::with_capacity(words.len());
         let empty = Vec::new();
         for (idx, word) in words.iter().enumerate() {
-            for t_e in word.bow.iter() {
-                let v = toks_hm.entry(t_e.id).or_insert(empty.clone());
+            for tok in word.bow.iter() {
+                let v = toks_hm.entry(*tok).or_insert(empty.clone());
                 v.push(idx as u32);
             }
         }
@@ -221,10 +296,10 @@ impl FuzzyLookup {
     fn lookup(&self, word: String) -> Option<(String, f64)> {
         let mut word_info = FuzzyEntry::new(word);
         word_info.bow.sort_unstable_by(|a, b| {
-            let a_freq = get_entry(&self.toks, &a.id)
+            let a_freq = get_entry(&self.toks, &a)
                 .map(|e| e.entry.len())
                 .unwrap_or(0);
-            let b_freq = get_entry(&self.toks, &b.id)
+            let b_freq = get_entry(&self.toks, &b)
                 .map(|e| e.entry.len())
                 .unwrap_or(0);
             a_freq.cmp(&b_freq)
@@ -233,11 +308,11 @@ impl FuzzyLookup {
         //println!("{:?}", word_info);
         let mut freqs: HashMap<u32, i32> = HashMap::new(); //with_hasher(FnvHasher::default());
         let mut n_times = 0;
-        for t_f in word_info.bow.iter() {
+        for tok in word_info.bow.iter() {
             if n_times > 10 {
                 break;
             }
-            match get_entry(&self.toks, &t_f.id) {
+            match get_entry(&self.toks, &tok) {
                 Some(e) => {
                     //println!("idx {:?}", idx);
                     for word_idx in e.entry.iter() {
@@ -316,25 +391,50 @@ fn main() {
     let mut wins = 0;
     let mut n_cities_done: usize = 0;
     let n_cities = 10000;
+
+    let fe: Vec<_> = Iterator::collect(words.iter().map(|w| FuzzyEntry::new(w.to_owned())));
     let start = Instant::now();
+    for c1 in fe.iter().take(1000) {
+        for c2 in fe.iter().take(1000) {
+            c1.sim(c2);
+            n_cities_done += 1;
+        }
+    }
+
     for city in words.iter().take(n_cities) {
+        break;
         n_cities_done += 1;
         let mut messed_up: String = "A".to_owned();
         messed_up.push_str(city);
-        let e = FuzzyEntry::new(messed_up);
-        /*match lookup.lookup(messed_up) {
-            Some((r, _)) => {
-                if &r == city {
-                    wins += 1;
+        //let e = FuzzyEntry::new(messed_up);
+        if false {
+            match lookup.lookup(messed_up) {
+                Some((r, _)) => {
+                    if &r == city {
+                        wins += 1;
+                    }
                 }
+                _ => {}
             }
-            _ => {}
-        } */
+        }
     }
     let elapsed = start.elapsed().as_micros();
-    println!("TIME EACH: {:?}", elapsed / n_cities_done as u128);
+    println!(
+        "TIME EACH: {:?}",
+        elapsed / cmp::max(n_cities_done as u128, 1)
+    );
     println!(
         "{:?}",
         (wins, n_cities_done, (wins as f32) / (n_cities_done as f32))
     );
+
+    let l = vec![0, 0, 4, 14, 20, 20, 24];
+    let r = vec![4, 10, 10, 14, 24];
+    for i in DualIter::new(l.iter(), r.iter()) {
+        println!("{:?}", i);
+    }
+    println!(
+        "{:?}",
+        FuzzyEntry::new("GRAN RAPIDS".to_owned()).sim(&FuzzyEntry::new("GRAND RAPIDS".to_owned()))
+    )
 }
