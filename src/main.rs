@@ -1,11 +1,12 @@
 use std::cmp;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::convert::Into;
 use std::default::Default;
 use std::fmt;
 use std::fs::File;
-use std::hash::{BuildHasherDefault, Hasher};
+use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::io::prelude::*;
 use std::iter::FromIterator;
 use std::mem;
@@ -46,6 +47,20 @@ impl Hasher for FnvHasher {
 type FnvBuildHasher = BuildHasherDefault<FnvHasher>;
 type FnvHashMap<K, V> = HashMap<K, V, FnvBuildHasher>;
 
+fn shuffle<T: Hash + Copy>(items: &[T]) -> Vec<T> {
+    let make_hash = |t: T| {
+        let mut s = DefaultHasher::new();
+        t.hash(&mut s);
+        s.finish()
+    };
+    let mut xs: Vec<_> = Iterator::collect(items.iter().map(|t| Entry {
+        id: make_hash(*t),
+        entry: t,
+    }));
+    xs.sort();
+    Iterator::collect(xs.into_iter().map(|e| *e.entry))
+}
+
 #[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq)]
 struct Tok(u8, [u8; 2]);
 
@@ -63,10 +78,13 @@ struct Entry<Id, T> {
     entry: T,
 }
 
-fn get_entry<'a, Id: Ord, T>(entries: &'a [Entry<Id, T>], t: &Id) -> Option<&'a Entry<Id, T>> {
+fn get_entry<'a, Id: Ord, T>(
+    entries: &'a [Entry<Id, T>],
+    t: &Id,
+) -> Option<(usize, &'a Entry<Id, T>)> {
     unsafe {
         match entries.binary_search_by(|e| e.id.cmp(t)) {
-            Ok(idx) => Some(entries.get_unchecked(idx)),
+            Ok(idx) => Some((idx, entries.get_unchecked(idx))),
             _ => None,
         }
     }
@@ -216,7 +234,7 @@ struct FuzzyEntry {
 
 impl FuzzyEntry {
     fn new(s: String) -> FuzzyEntry {
-        let mut vbow: Vec<Tok> = Vec::with_capacity(4);
+        let mut vbow: Vec<Tok> = Vec::with_capacity(8);
         {
             let mut updt = |t: Tok| vbow.push(t);
             update_gram(&s.as_bytes(), &mut updt);
@@ -251,14 +269,59 @@ impl FuzzyEntry {
         (n as f64 / d as f64) //.sqrt()
     }
 }
-#[derive(Clone, Debug)]
-struct FuzzyLookup {
-    words: Vec<FuzzyEntry>,
-    toks: Vec<Entry<Tok, Vec<u32>>>,
+
+#[derive(Debug, Clone, Default)]
+struct FreqCounter<T> {
+    to_sort: Vec<T>,
+    freqs: Vec<(T, usize)>,
 }
 
-impl FuzzyLookup {
-    fn new<W: Iterator<Item = String>>(wrds: W) -> FuzzyLookup {
+impl<T: Ord + fmt::Debug> FreqCounter<T> {
+    fn new() -> FreqCounter<T> {
+        FreqCounter {
+            to_sort: Vec::new(),
+            freqs: Vec::new(),
+        }
+    }
+
+    fn frequencies<'a, Items>(&'a mut self, items: Items) -> &'a mut Vec<(T, usize)>
+    where
+        Items: Iterator<Item = T>,
+    {
+        self.to_sort.clear();
+        self.freqs.clear();
+
+        self.to_sort.extend(items);
+        self.to_sort.sort();
+        let mut item_iter = self.to_sort.drain(..);
+
+        for item in item_iter {
+            match self.freqs.last_mut() {
+                None => {
+                    self.freqs.push((item, 1));
+                }
+                Some(last) => {
+                    if last.0 == item {
+                        last.1 += 1;
+                    } else {
+                        self.freqs.push((item, 1));
+                    }
+                }
+            }
+        }
+        &mut self.freqs
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FuzzyIndex {
+    words: Vec<FuzzyEntry>,
+    toks: Vec<Entry<Tok, Vec<u32>>>,
+    word_fc: FreqCounter<u32>,
+}
+
+impl FuzzyIndex {
+    fn new<W: Iterator<Item = String>>(wrds: W) -> FuzzyIndex {
         let words_set: HashSet<String> = Iterator::collect(wrds);
         // sort words set???
         let mut words: Vec<FuzzyEntry> =
@@ -278,23 +341,68 @@ impl FuzzyLookup {
             //println!("{:?}", idxs.len());
             toks.push(Entry {
                 id: tok,
-                entry: idxs,
+                entry: shuffle(&idxs),
             });
         }
         toks.sort();
         //TODO randomize order of the Vec<u32>'s in toks??
         println!("w t {:?}", (words.len(), toks.len()));
 
-        let r = FuzzyLookup {
+        let mut r = FuzzyIndex {
             words: words,
             toks: toks,
+            word_fc: FreqCounter::new(),
         };
         //println!("{:?}", r);
+        //r.compress(55);
+        //r.compress(34);
+        r.compress(21);
+        r.compress(13);
         r
     }
 
+    fn freq_of(&self, tok: &Tok) -> usize {
+        get_entry(&self.toks, tok)
+            .map(|(_, e)| e.entry.len())
+            .unwrap_or(0)
+    }
+
+    fn compress(&mut self, cuttoff: usize) {
+        let mut too_common: Vec<Entry<(usize, Tok), ()>> = Vec::with_capacity(self.toks.len());
+        let mut toks_sort: Vec<Tok> = Vec::new();
+        for (idx, word) in self.words.iter().enumerate() {
+            if word.bow.len() > cuttoff {
+                toks_sort.extend(word.bow.iter());
+                toks_sort.sort_by_cached_key(|t| self.freq_of(t));
+                for tok in toks_sort[cuttoff..].iter() {
+                    too_common.push(Entry {
+                        id: (idx, *tok),
+                        entry: (),
+                    });
+                }
+                toks_sort.clear();
+            }
+        }
+
+        too_common.sort();
+
+        let mut sort_slate: &mut Vec<u32> = &mut Vec::new();
+        for e in self.toks.iter_mut() {
+            let mut words = &mut e.entry;
+            sort_slate.extend(words.iter());
+            //words.extend(sort_slate.into_iter().filter(|word: u32|{get_entry(&too_common, &(**word as usize, e.id)).is_none()}))
+            words.clear();
+            for word_idx in sort_slate.iter() {
+                if get_entry(&too_common, &(*word_idx as usize, e.id)).is_none() {
+                    words.push(*word_idx);
+                }
+            }
+            sort_slate.clear();
+        }
+    }
+
     fn lookup(&self, word: String) -> Option<(String, f64)> {
-        let mut word_info = FuzzyEntry::new(word);
+        /*let mut word_info = FuzzyEntry::new(word);
         word_info.bow.sort_unstable_by(|a, b| {
             let a_freq = get_entry(&self.toks, &a)
                 .map(|e| e.entry.len())
@@ -303,39 +411,72 @@ impl FuzzyLookup {
                 .map(|e| e.entry.len())
                 .unwrap_or(0);
             a_freq.cmp(&b_freq)
-        });
+        }); */
+
+        let word_info = FuzzyEntry::new(word);
+        let mut freq_bow = Vec::with_capacity(word_info.bow.len());
+        freq_bow.extend(word_info.bow.iter().filter_map(|a| {
+            let r = get_entry(&self.toks, &a).map(|(idx, e)| Entry {
+                id: e.entry.len(),
+                entry: (idx, a),
+            });
+            r
+        }));
+
+        freq_bow.sort();
 
         //println!("{:?}", word_info);
-        let mut freqs: HashMap<u32, i32> = HashMap::new(); //with_hasher(FnvHasher::default());
-        let mut n_times = 0;
-        for tok in word_info.bow.iter() {
-            if n_times > 10 {
-                break;
-            }
-            match get_entry(&self.toks, &tok) {
-                Some(e) => {
-                    //println!("idx {:?}", idx);
-                    for word_idx in e.entry.iter() {
-                        *freqs.entry(*word_idx).or_insert(0) += 1;
-                        n_times += 1;
-                    }
+        /*
+        if false {
+            let mut freqs: HashMap<u32, i32> = HashMap::new(); //with_hasher(FnvHasher::default());
+            let mut n_times = 0;
+            for tok in word_info.bow.iter() {
+                if n_times > 10 {
+                    break;
                 }
-                _ => {}
+                match get_entry(&self.toks, &tok) {
+                    Some(e) => {
+                        //println!("idx {:?}", idx);
+                        for word_idx in e.entry.iter() {
+                            *freqs.entry(*word_idx).or_insert(0) += 1;
+                            n_times += 1;
+                        }
+                    }
+                    _ => {}
+                }
             }
-        }
+        }*/
+
         //println!("n_times {:?}", n_times);
         let n_toks = word_info.bow.len() as f64;
         let mut r: Option<(String, f64)> = None;
         let mut max_so_far: f64 = 0.0;
         //println!("{:?}", freqs);
-        for (idx, freq) in freqs.into_iter() {
+        //println!("{:?}", freq_bow.len());
+        //let mut tried = Vec::new();
+        let mut last_win_ago = 0;
+        for e in freq_bow.into_iter() {
+            let (freq, (idx, tok)) = (e.id, e.entry);
             //println!("{:?}", (idx, freq));
-            let word_b_info = &self.words[idx as usize];
-            let n_b_toks = word_b_info.bow.len() as f64;
-            let jaccard = ((freq * 2) as f64) / (n_toks + n_b_toks);
-            if jaccard.gt(&max_so_far) {
-                r = Some((word_b_info.string.clone(), jaccard));
-                max_so_far = jaccard;
+            //println!("{:?}", &self.toks[idx as usize].entry.len());
+            for idx_b in self.toks[idx as usize].entry.iter().take(64) {
+                //if !tried.contains(idx_b) {
+                if last_win_ago > 64 {
+                    break;
+                }
+                let word_b_info = &self.words[*idx_b as usize];
+
+                //let n_b_toks = word_b_info.bow.len() as f64;
+                let jaccard = word_info.sim(word_b_info); //((freq * 2) as f64) / (n_toks + n_b_toks);
+                if jaccard.gt(&max_so_far) {
+                    r = Some((word_b_info.string.clone(), jaccard));
+                    max_so_far = jaccard;
+                    last_win_ago = 0;
+                } else {
+                    last_win_ago += 1;
+                }
+                //tried.push(*idx_b);
+                // }
             }
         }
         r
@@ -355,7 +496,7 @@ fn main() {
         //"xyz".to_owned(),
     ]
     .into_iter();
-    //let lookup = FuzzyLookup::new(words);
+    //let lookup = FuzzyIndex::new(words);
     //println!("{:?}", lookup.lookup("gra".to_owned()));
     let mut i = 0.0;
 
@@ -380,34 +521,36 @@ fn main() {
     for line in s.lines() {
         let line_words: Vec<_> = line.split("|").collect();
         if line_words.len() > 2 {
-            if true {
-                //line_words[1] == "MI" {
+            if false {
+                words.insert(line_words[0].to_owned());
+            } else if line_words[1] == "MI" {
                 words.insert(line_words[0].to_owned());
             }
         }
     }
 
-    let lookup = FuzzyLookup::new(words.iter().map(|a| a.to_owned()));
+    let lookup = FuzzyIndex::new(words.iter().map(|a| a.to_owned()));
     let mut wins = 0;
     let mut n_cities_done: usize = 0;
     let n_cities = 10000;
 
     let fe: Vec<_> = Iterator::collect(words.iter().map(|w| FuzzyEntry::new(w.to_owned())));
     let start = Instant::now();
-    for c1 in fe.iter().take(1000) {
-        for c2 in fe.iter().take(1000) {
-            c1.sim(c2);
-            n_cities_done += 1;
+    if false {
+        for c1 in fe.iter().take(1000) {
+            for c2 in fe.iter().take(1000) {
+                c1.sim(c2);
+                n_cities_done += 1;
+            }
         }
     }
 
     for city in words.iter().take(n_cities) {
-        break;
         n_cities_done += 1;
         let mut messed_up: String = "A".to_owned();
         messed_up.push_str(city);
         //let e = FuzzyEntry::new(messed_up);
-        if false {
+        if true {
             match lookup.lookup(messed_up) {
                 Some((r, _)) => {
                     if &r == city {
@@ -435,6 +578,8 @@ fn main() {
     }
     println!(
         "{:?}",
-        FuzzyEntry::new("GRAN RAPIDS".to_owned()).sim(&FuzzyEntry::new("GRAND RAPIDS".to_owned()))
+        //FuzzyEntry::new("GRAN RAPIDS".to_owned()).sim(&FuzzyEntry::new("GRAND RAPIDS".to_owned()))
+        //lookup.lookup("RAPIDS".to_owned())
+        shuffle(&[1, 2, 3, 4, 5, 6, 7])
     )
 }
