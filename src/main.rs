@@ -444,19 +444,28 @@ impl FuzzyIndex {
             .take(4)
             .map(|e| (self.toks[e.entry.0 as usize]).entry.iter())
             .flatten()
-            .map(|x| *x)
-            .take(250);
+            .map(|x| *x);
+        //.take(250);
         let words_freqs = word_fc.frequencies(word_idxs);
         words_freqs.sort_unstable_by(|a, b| (b.1).cmp(&a.1));
         //println!("{:?}", words_freqs.len());
-        let mut last_win = 0;
+
+        let mut last_win_ago = 0;
         for (word_idx, _) in words_freqs.iter().take(20) {
-            //for word_idx in word_idxs.take(32) {
+            if last_win_ago > 12 {
+                break;
+            }
             let word_b_info: &FuzzyEntry = &self.words[*word_idx as usize];
             let jaccard = word_info.sim(word_b_info); //((freq * 2) as f64) / (n_toks + n_b_toks);
+            if jaccard > 0.8 {
+                return Some((word_b_info.string.clone(), jaccard));
+            }
             if jaccard.gt(&max_so_far) {
                 r = Some((word_b_info.string.clone(), jaccard));
                 max_so_far = jaccard;
+                last_win_ago = 0;
+            } else {
+                last_win_ago += 1;
             }
         }
 
