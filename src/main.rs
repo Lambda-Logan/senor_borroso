@@ -444,7 +444,8 @@ impl FuzzyIndex {
             .take(4)
             .map(|e| (self.toks[e.entry.0 as usize]).entry.iter())
             .flatten()
-            .map(|x| *x);
+            .map(|x| *x)
+            .take(250);
         let words_freqs = word_fc.frequencies(word_idxs);
         words_freqs.sort_unstable_by(|a, b| (b.1).cmp(&a.1));
         //println!("{:?}", words_freqs.len());
@@ -526,7 +527,8 @@ fn main() {
         }
     }
 
-    for city in words.iter().take(n_cities) {
+    for city in words.iter() {
+        //.take(n_cities) {
         n_cities_done += 1;
         let mut messed_up: String = "A".to_owned();
         messed_up.push_str(city);
