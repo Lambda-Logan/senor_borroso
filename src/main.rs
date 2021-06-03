@@ -9,11 +9,14 @@ use std::fs::File;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::io::prelude::*;
 use std::iter::FromIterator;
-use std::mem;
 use std::path::Path;
 use std::rc::Rc;
 use std::str;
 use std::time::Instant;
+
+mod stacksort;
+use stacksort::*;
+
 #[allow(missing_copy_implementations)]
 struct FnvHasher(u64);
 
@@ -124,108 +127,6 @@ where
     }
 }
 
-#[derive(Copy, Clone, Debug)]
-enum AndOrOr<T> {
-    Left(T),
-    Right(T),
-    Both(T, T),
-}
-
-struct DualIter<L, T, R> {
-    left: L,
-    right: R,
-    item: Option<AndOrOr<T>>,
-}
-
-impl<L, T, R> DualIter<L, T, R>
-where
-    L: Iterator<Item = T>,
-    R: Iterator<Item = T>,
-{
-    fn new(mut l: L, mut r: R) -> DualIter<L, T, R> {
-        let maybe_item = Self::next_left_right(&mut l, &mut r);
-        DualIter {
-            left: l,
-            right: r,
-            item: maybe_item,
-        }
-    }
-
-    fn next_left_right(l: &mut L, r: &mut R) -> Option<AndOrOr<T>> {
-        match l.next() {
-            Some(x) => Some(AndOrOr::Left(x)),
-            None => match r.next() {
-                Some(x) => Some(AndOrOr::Left(x)),
-                None => None,
-            },
-        }
-    }
-}
-
-impl<L, T, R> Iterator for DualIter<L, T, R>
-where
-    T: Ord,
-    L: Iterator<Item = T>,
-    R: Iterator<Item = T>,
-{
-    type Item = AndOrOr<T>;
-    #[inline(always)]
-    fn next(&mut self) -> Option<Self::Item> {
-        let mut self_item = None;
-        //let mut ret = None;
-        mem::swap(&mut self_item, &mut self.item);
-        match self_item {
-            Some(AndOrOr::Left(l)) => match self.right.next() {
-                None => {
-                    return Some(AndOrOr::Left(l));
-                }
-                Some(r) => {
-                    if l < r {
-                        self.item = Some(AndOrOr::Right(r));
-                        return Some(AndOrOr::Left(l));
-                    } else if l == r {
-                        self.item = DualIter::next_left_right(&mut self.left, &mut self.right);
-                        return Some(AndOrOr::Both(l, r));
-                    } else {
-                        self.item = Some(AndOrOr::Left(l));
-                        return Some(AndOrOr::Right(r));
-                    }
-                }
-            },
-            Some(AndOrOr::Right(r)) => match self.left.next() {
-                None => {
-                    return Some(AndOrOr::Right(r));
-                }
-                Some(l) => {
-                    if l < r {
-                        self.item = Some(AndOrOr::Right(r));
-                        return Some(AndOrOr::Left(l));
-                    } else if l == r {
-                        self.item = DualIter::next_left_right(&mut self.left, &mut self.right);
-                        return Some(AndOrOr::Both(l, r));
-                    } else {
-                        self.item = Some(AndOrOr::Left(l));
-                        return Some(AndOrOr::Right(r));
-                    }
-                }
-            },
-            Some(AndOrOr::Both(l, r)) => {
-                self.item = DualIter::next_left_right(&mut self.left, &mut self.right);
-                return Some(AndOrOr::Both(l, r));
-            }
-            None => match DualIter::next_left_right(&mut self.left, &mut self.right) {
-                Some(x) => {
-                    self.item = Some(x);
-                    return self.next();
-                }
-                None => {
-                    return None;
-                }
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
 struct FuzzyEntry {
     string: String,
@@ -270,46 +171,51 @@ impl FuzzyEntry {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct FreqCounter<T> {
-    to_sort: Vec<T>,
-    freqs: Vec<(T, usize)>,
+    to_sort: [T; 250],
+    freqs: [(T, u8); 250],
 }
 
-impl<T: Ord + fmt::Debug> FreqCounter<T> {
+impl<T: Ord + fmt::Debug + Default + Copy> FreqCounter<T> {
     fn new() -> FreqCounter<T> {
         FreqCounter {
-            to_sort: Vec::new(),
-            freqs: Vec::new(),
+            to_sort: [Default::default(); 250],
+            freqs: [Default::default(); 250],
         }
     }
 
-    fn frequencies<'a, Items>(&'a mut self, items: Items) -> &'a mut Vec<(T, usize)>
+    fn frequencies<'a, Items>(&'a mut self, items: Items) -> &'a mut [(T, u8)]
     where
         Items: Iterator<Item = T>,
     {
-        self.to_sort.clear();
-        self.freqs.clear();
-
-        self.to_sort.extend(items);
-        self.to_sort.sort();
-        let mut item_iter = self.to_sort.drain(..);
-
-        for item in item_iter {
-            match self.freqs.last_mut() {
-                None => {
-                    self.freqs.push((item, 1));
-                }
-                Some(last) => {
-                    if last.0 == item {
-                        last.1 += 1;
-                    } else {
-                        self.freqs.push((item, 1));
-                    }
-                }
-            }
+        let mut ts = 0;
+        for item in items.into_iter().take(250) {
+            self.to_sort[ts] = item;
+            ts += 1;
         }
-        &mut self.freqs
+        self.to_sort[0..ts].sort();
+
+        //println!("{:?}", self.to_sort);
+        let mut f = 0;
+        for item in &self.to_sort[..ts] {
+            //println!("\nitem: {:?}", item);
+            //println!("{:?}", &self.freqs[..10]);
+            //if f == 0 {
+            //    self.freqs[0] = (*item, 1);
+            //}
+            if self.freqs[f].0 == *item {
+                //TODO and f > 0
+                let (t, n) = self.freqs[f];
+                self.freqs[f] = (t, n + 1);
+            } else {
+                f += 1;
+                self.freqs[f] = (*item, 1);
+            }
+            //println!("{:?}", &self.freqs[..10]);
+        }
+        //println!("{:?}", &self.freqs[..16]);
+        &mut self.freqs[1..f + 1]
     }
 }
 
@@ -400,19 +306,10 @@ impl FuzzyIndex {
     }
 
     fn lookup(&self, word: String, word_fc: &mut FreqCounter<u32>) -> Option<(String, f64)> {
-        /*let mut word_info = FuzzyEntry::new(word);
-        word_info.bow.sort_unstable_by(|a, b| {
-            let a_freq = get_entry(&self.toks, &a)
-                .map(|e| e.entry.len())
-                .unwrap_or(0);
-            let b_freq = get_entry(&self.toks, &b)
-                .map(|e| e.entry.len())
-                .unwrap_or(0);
-            a_freq.cmp(&b_freq)
-        }); */
-
         let word_info = FuzzyEntry::new(word);
+        /// 22 µs
         let mut freq_bow = Vec::with_capacity(word_info.bow.len());
+        //  24 µs
         freq_bow.extend(word_info.bow.iter().filter_map(|a| {
             let r = get_entry(&self.toks, &a).map(|(idx, e)| Entry {
                 id: e.entry.len(),
@@ -420,42 +317,42 @@ impl FuzzyIndex {
             });
             r
         }));
-
+        //  73 µs
         freq_bow.sort();
-
-        //println!("n_times {:?}", n_times);
+        //  80 µs
         let n_toks = word_info.bow.len() as f64;
         let mut r: Option<(String, f64)> = None;
         let mut max_so_far: f64 = 0.0;
-        //println!("{:?}", freqs);
-        //println!("{:?}", freq_bow.len());
-        //let mut tried = Vec::new();
-        //let mut words = Vec::with_capacity(256);
-        //for e in freq_bow.into_iter().take(1) {
-        //   let (freq, (idx, tok)) = (e.id, e.entry);
-        //println!("{:?}", (idx, freq));
-        //println!("{:?}", &self.toks[idx as usize].entry.len());
-        //   words.extend(self.toks[idx as usize].entry.iter());
-        //}
-        //let words_len = words.len();
-        //let mut words_freqs = word_fc.frequencies(words.drain(..));
+
         let word_idxs = freq_bow
             .into_iter()
-            .take(4)
+            .take(5)
             .map(|e| (self.toks[e.entry.0 as usize]).entry.iter())
             .flatten()
             .map(|x| *x);
-        let words_freqs = word_fc.frequencies(word_idxs);
+        //.take(256);
+        //  80 µs
+        let words_freqs: &mut [(u32, u8)] = word_fc.frequencies(word_idxs);
+        //  183 µs
         words_freqs.sort_unstable_by(|a, b| (b.1).cmp(&a.1));
-        //println!("{:?}", words_freqs.len());
-        let mut last_win = 0;
+        //  217 µs
+        let mut last_win_ago = 0;
+
         for (word_idx, _) in words_freqs.iter().take(20) {
-            //for word_idx in word_idxs.take(32) {
+            if last_win_ago > 12 {
+                break;
+            }
             let word_b_info: &FuzzyEntry = &self.words[*word_idx as usize];
             let jaccard = word_info.sim(word_b_info); //((freq * 2) as f64) / (n_toks + n_b_toks);
+            if jaccard > 0.8 {
+                return Some((word_b_info.string.clone(), jaccard));
+            }
             if jaccard.gt(&max_so_far) {
                 r = Some((word_b_info.string.clone(), jaccard));
                 max_so_far = jaccard;
+                last_win_ago = 0;
+            } else {
+                last_win_ago += 1;
             }
         }
 
@@ -515,6 +412,8 @@ fn main() {
     let mut n_cities_done: usize = 0;
     let n_cities = 10000;
     let mut fc = FreqCounter::new();
+    //println!("{:?}", fc.frequencies([77; 249].iter().map(|d| { *d })));
+
     let fe: Vec<_> = Iterator::collect(words.iter().map(|w| FuzzyEntry::new(w.to_owned())));
     let start = Instant::now();
     if false {
@@ -526,7 +425,8 @@ fn main() {
         }
     }
 
-    for city in words.iter().take(n_cities) {
+    for city in words.iter() {
+        //.take(n_cities) {
         n_cities_done += 1;
         let mut messed_up: String = "A".to_owned();
         messed_up.push_str(city);
