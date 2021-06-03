@@ -317,7 +317,7 @@ impl<T: Ord + fmt::Debug> FreqCounter<T> {
 struct FuzzyIndex {
     words: Vec<FuzzyEntry>,
     toks: Vec<Entry<Tok, Vec<u32>>>,
-    word_fc: FreqCounter<u32>,
+    //=freqs
 }
 
 impl FuzzyIndex {
@@ -351,7 +351,6 @@ impl FuzzyIndex {
         let mut r = FuzzyIndex {
             words: words,
             toks: toks,
-            word_fc: FreqCounter::new(),
         };
         //println!("{:?}", r);
         //r.compress(55);
@@ -521,7 +520,7 @@ fn main() {
     for line in s.lines() {
         let line_words: Vec<_> = line.split("|").collect();
         if line_words.len() > 2 {
-            if false {
+            if true {
                 words.insert(line_words[0].to_owned());
             } else if line_words[1] == "MI" {
                 words.insert(line_words[0].to_owned());
@@ -574,7 +573,7 @@ fn main() {
     let l = vec![0, 0, 4, 14, 20, 20, 24];
     let r = vec![4, 10, 10, 14, 24];
     for i in DualIter::new(l.iter(), r.iter()) {
-        println!("{:?}", i);
+        //println!("{:?}", i);
     }
     println!(
         "{:?}",
