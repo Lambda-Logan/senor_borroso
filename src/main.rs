@@ -1,3 +1,5 @@
+#![allow(warnings)]
+use heapsize::*;
 use std::cmp;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -46,8 +48,22 @@ impl Hasher for FnvHasher {
 /// A builder for default FNV hashers.
 type FnvBuildHasher = BuildHasherDefault<FnvHasher>;
 type FnvHashMap<K, V> = HashMap<K, V, FnvBuildHasher>;
-
 fn shuffle<T: Hash + Copy>(items: &[T]) -> Vec<T> {
+    let mut s = DefaultHasher::new();
+    let start = Instant::now();
+    let mut make_hash = |t: T| {
+        start.elapsed().as_nanos().hash(&mut s);
+        s.finish()
+    };
+    let mut xs: Vec<_> = Iterator::collect(items.iter().map(|t| Entry {
+        id: make_hash(*t),
+        entry: t,
+    }));
+    xs.sort();
+    Iterator::collect(xs.into_iter().map(|e| *e.entry))
+}
+
+fn _shuffle<T: Hash + Copy>(items: &[T]) -> Vec<T> {
     let make_hash = |t: T| {
         let mut s = DefaultHasher::new();
         t.hash(&mut s);
@@ -61,17 +77,109 @@ fn shuffle<T: Hash + Copy>(items: &[T]) -> Vec<T> {
     Iterator::collect(xs.into_iter().map(|e| *e.entry))
 }
 
-#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq)]
-struct Tok(u8, [u8; 2]);
+struct RangeIter {
+    state: (usize, usize),
+    range: (),
+}
 
-impl fmt::Debug for Tok {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let a_val = &[self.0];
-        let a = str::from_utf8(a_val).unwrap();
-        let bc = str::from_utf8(&self.1).unwrap();
-        f.debug_tuple("Tok").field(&a).field(&bc).finish()
+struct SkipScheme {
+    group_a: (usize, usize),
+    gap: (usize, usize),
+    group_b: (usize, usize),
+}
+
+impl SkipScheme {
+    fn run<F, T: Sized + Hash + fmt::Debug>(&self, s: &[T], updt: &mut F)
+    where
+        F: FnMut(u64) -> (),
+    {
+        let min = self.group_a.0 + self.gap.0 + self.group_b.0;
+        //println!("{:?}", &s[grp_a_1..grp_a_2]);
+        if s.len() < min {
+            return ();
+        };
+        if self.gap.1 > 0 {
+            let min_gap = cmp::max(1, self.gap.0);
+            for x in 0..(s.len() - min + 1) {
+                for grp_a_idx in (x + self.group_a.0)..(x + self.group_a.1 + 1) {
+                    if grp_a_idx > s.len() {
+                        break;
+                    }
+                    //if x != grp_a_idx {
+                    //    println!("ga: {:?}", ((x, grp_a_idx), &s[x..grp_a_idx]));
+                    //};
+                    let group_a = &s[x..grp_a_idx];
+                    for space_idx in (grp_a_idx + min_gap)..(grp_a_idx + self.gap.1 + 1) {
+                        for grp_b_idx in
+                            (space_idx + self.group_b.0)..(space_idx + self.group_b.1 + 1)
+                        {
+                            if grp_b_idx > s.len() {
+                                break;
+                            }
+
+                            let group_b = &s[space_idx..grp_b_idx];
+                            let mut hasher: FnvHasher = Default::default();
+                            if group_a.len() != 0 {
+                                group_a.hash(&mut hasher);
+                            };
+                            if group_b.len() != 0 {
+                                group_b.hash(&mut hasher);
+                            };
+                            updt(hasher.finish());
+                        }
+                    }
+                }
+            }
+        }
+
+        if self.gap.0 == 0 {
+            let a = self.group_a.0 + self.group_b.0;
+            let b = self.group_a.1 + self.group_b.1;
+            for x in 0..(s.len() - a + 1) {
+                for _y in a..(b + 1) {
+                    let y = x + _y;
+
+                    if y > s.len() {
+                        break;
+                    }
+                    if x != y {
+                        //println!("gram: {:?}", ((x, y), &s[x..y]));
+                        let mut hasher: FnvHasher = Default::default();
+                        &s[x..y].hash(&mut hasher);
+                        updt(hasher.finish());
+                    };
+                }
+            }
+        }
     }
 }
+
+//#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq)]
+//struct Tok(u8, u8, u8, u8);
+//struct Tok(u8, [u8; 2]);
+
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+struct Tok(u64);
+
+/*impl fmt::Debug for Tok {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let a_val = &[self.0];
+        let b_val = &[self.1];
+        let c_val = &[self.2];
+        let d_val = &[self.3];
+        let a = str::from_utf8(a_val).unwrap();
+        let b = str::from_utf8(b_val).unwrap();
+        let c = str::from_utf8(c_val).unwrap();
+        let d = str::from_utf8(d_val).unwrap();
+        f.debug_tuple("Tok")
+            .field(&a)
+            .field(&b)
+            .field(&c)
+            .field(&d)
+            .finish()
+    }
+}*/
+
 #[derive(Copy, Clone, Debug)]
 struct Entry<Id, T> {
     id: Id,
@@ -110,18 +218,74 @@ impl<T, Id: Ord> Ord for Entry<Id, T> {
     }
 }
 
-fn update_gram<F>(s: &[u8], updt: &mut F)
+/*fn update_gram<F>(s: &[u8], updt: &mut F)
 where
     F: FnMut(Tok) -> (),
 {
+    let default: u8 = 35;
+
     let l = s.len();
+    if l > 1 {
+        updt(Tok(36, s[0], s[1], default));
+        updt(Tok(default, s[l - 2], s[l - 1], 36));
+    }
+    if l > 2 {
+        updt(Tok(36, s[1], s[2], default));
+        updt(Tok(default, s[l - 3], s[l - 2], 36));
+    }
     for c in 1..l {
         let b = c - 1;
         let _a = cmp::max(0, (b as isize) - 3) as usize;
         for a in _a..b {
-            updt(Tok(s[a], [s[b], s[c]]));
+            if a > 0 {
+                let pre_a = a - 1;
+                updt(Tok(s[pre_a], s[a], s[b], s[c]));
+            } else {
+                updt(Tok(s[a], s[b], s[c], default));
+            }
         }
     }
+}
+
+fn _update_gram<F>(s: &[u8], updt: &mut F)
+where
+    F: FnMut(Tok) -> (),
+{
+    let default: u8 = 35;
+
+    let l = s.len();
+    if l > 1 {
+        updt(Tok(36, s[0], s[1], default));
+        updt(Tok(default, s[l - 2], s[l - 1], 36));
+    }
+    if l > 2 {
+        updt(Tok(36, s[1], s[2], default));
+        updt(Tok(default, s[l - 3], s[l - 2], 36));
+    }
+    for c in 1..l {
+        let b = c - 1;
+        let _a = cmp::max(0, (b as isize) - 3) as usize;
+        for a in _a..b {
+            updt(Tok(s[a], s[b], s[c], default));
+        }
+    }
+}*/
+
+fn update_gram<F>(s: &[u8], updt: &mut F)
+where
+    F: FnMut(Tok) -> (),
+{
+    let mut _updt = |u| updt(Tok(u));
+    let mut xs: Vec<u8> = Vec::with_capacity(s.len() + 2);
+    //xs.push(0);
+    //xs.extend(s);
+    //xs.push(255);
+    let ss = SkipScheme {
+        group_a: (2, 2), //(2, 3),
+        gap: (0, 2),
+        group_b: (2, 3),
+    };
+    ss.run(s, &mut _updt);
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -234,12 +398,16 @@ struct FuzzyEntry {
 
 impl FuzzyEntry {
     fn new(s: String) -> FuzzyEntry {
+        //let mut s: String = "#".to_owned();
+        //s.push_str(&ss);
+        //println!("\n{:?}", s);
         let mut vbow: Vec<Tok> = Vec::with_capacity(8);
         {
             let mut updt = |t: Tok| vbow.push(t);
             update_gram(&s.as_bytes(), &mut updt);
         }
         vbow.sort();
+        //println!("{:?}", vbow);
         let r = FuzzyEntry {
             string: s,
             bow: vbow,
@@ -354,7 +522,7 @@ impl FuzzyIndex {
         //println!("{:?}", r);
         //r.compress(55);
         //r.compress(34);
-        r.compress(21);
+        //r.compress(21);
         //r.compress(13);
         r
     }
@@ -413,6 +581,7 @@ impl FuzzyIndex {
 
         let word_info = FuzzyEntry::new(word);
         let mut freq_bow = Vec::with_capacity(word_info.bow.len());
+        // 36 ms
         freq_bow.extend(word_info.bow.iter().filter_map(|a| {
             let r = get_entry(&self.toks, &a).map(|(idx, e)| Entry {
                 id: e.entry.len(),
@@ -420,9 +589,9 @@ impl FuzzyIndex {
             });
             r
         }));
-
+        // 64 ms
         freq_bow.sort();
-
+        // 64 ms
         //println!("n_times {:?}", n_times);
         let n_toks = word_info.bow.len() as f64;
         let mut r: Option<(String, f64)> = None;
@@ -442,22 +611,24 @@ impl FuzzyIndex {
         let word_idxs = freq_bow
             .into_iter()
             .take(4)
-            .map(|e| (self.toks[e.entry.0 as usize]).entry.iter())
+            .map(|e| (self.toks[e.entry.0 as usize]).entry.iter().take(32))
             .flatten()
             .map(|x| *x);
         //.take(250);
         let words_freqs = word_fc.frequencies(word_idxs);
+        // 74 ms
         words_freqs.sort_unstable_by(|a, b| (b.1).cmp(&a.1));
         //println!("{:?}", words_freqs.len());
-
+        // 74 ms
         let mut last_win_ago = 0;
-        for (word_idx, _) in words_freqs.iter().take(20) {
+        for (word_idx, _) in words_freqs.iter().take(32) {
             if last_win_ago > 12 {
                 break;
             }
             let word_b_info: &FuzzyEntry = &self.words[*word_idx as usize];
             let jaccard = word_info.sim(word_b_info); //((freq * 2) as f64) / (n_toks + n_b_toks);
-            if jaccard > 0.8 {
+            if false {
+                // jaccard > 0.8 {
                 return Some((word_b_info.string.clone(), jaccard));
             }
             if jaccard.gt(&max_so_far) {
@@ -468,12 +639,34 @@ impl FuzzyIndex {
                 last_win_ago += 1;
             }
         }
-
+        // 89 ms
         r
+    }
+}
+fn rec_rev_str(mut s: String) -> String {
+    if s.is_empty() {
+        s
+    } else {
+        let removed_char = s.remove(0);
+        let mut s = rec_rev_str(s);
+        s.push(removed_char);
+        s
     }
 }
 
 fn main() {
+    let fs = SkipScheme {
+        group_a: (0, 2),
+        gap: (0, 1),
+        group_b: (0, 1),
+    };
+    fs.run(&['a', 'b', 'c', 'd', 'e', 'f'], &mut |a| {});
+    update_gram("ABCDEFG".as_bytes(), &mut {
+        |x| {
+            //println!("{:?}", x);
+            ()
+        }
+    });
     let words = vec![
         //"zabc".to_owned(),
         //"ab cd".to_owned(),
@@ -514,6 +707,7 @@ fn main() {
             if true {
                 //////////////////////////////////////////////////////////////////////////////////////
                 words.insert(line_words[0].to_owned());
+                words.insert(rec_rev_str(line_words[0].to_owned()));
             } else if line_words[1] == "MI" {
                 words.insert(line_words[0].to_owned());
             }
@@ -535,12 +729,17 @@ fn main() {
             }
         }
     }
+    //.take(n_cities)
 
     for city in words.iter() {
-        //.take(n_cities) {
         n_cities_done += 1;
         let mut messed_up: String = "A".to_owned();
         messed_up.push_str(city);
+        //let mut messed_up: String = city.to_owned();
+        if city.len() > 4 {
+            messed_up.insert_str(4, "E");
+        }
+        //println!("{:?}", (city, &messed_up));
         //let e = FuzzyEntry::new(messed_up);
         if true {
             match lookup.lookup(messed_up, &mut fc) {
