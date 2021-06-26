@@ -1,8 +1,10 @@
 use crate::dualiter::*;
+use fxhash::{FxHasher32, FxHasher64};
 use std::cmp;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::marker::PhantomData;
 use std::str;
 use unidecode::unidecode;
 
@@ -47,10 +49,7 @@ pub struct FuzzyEntry<T, Id = String> {
 
 pub type FeatEntry<F: Featurizer> = FuzzyEntry<F::Feat, F::Id>;
 
-pub trait Featurizer
-where
-    Self: Clone,
-{
+pub trait Featurizer {
     type Origin: Ord + Hash + Clone + Debug;
     type Feat: Ord + Hash + Clone + Debug;
     type Id: Ord + Hash + Clone + Debug;
@@ -164,10 +163,11 @@ pub trait CanGram {
     fn run<F: FnMut(u64) -> (), T: Sized + Hash + fmt::Debug>(&self, s: &[T], push_feat: &mut F);
 }
 
-struct SkipScheme {
-    group_a: (usize, usize),
-    gap: (usize, usize),
-    group_b: (usize, usize),
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+pub struct SkipScheme {
+    pub group_a: (usize, usize),
+    pub gap: (usize, usize),
+    pub group_b: (usize, usize),
 }
 
 impl CanGram for SkipScheme {
@@ -200,7 +200,7 @@ impl CanGram for SkipScheme {
                             }
 
                             let group_b = &s[space_idx..grp_b_idx];
-                            let mut hasher: FnvHasher = Default::default();
+                            let mut hasher: FxHasher64 = Default::default();
 
                             if group_a.len() != 0 {
                                 group_a.hash(&mut hasher);
@@ -245,7 +245,7 @@ impl<Cg: CanGram> CanGram for [Cg] {
     }
 }
 
-fn n_gram(n: usize) -> SkipScheme {
+pub fn n_gram(n: usize) -> SkipScheme {
     SkipScheme {
         group_a: (0, 0),
         gap: (0, 0),
@@ -253,12 +253,93 @@ fn n_gram(n: usize) -> SkipScheme {
     }
 }
 
-fn skipgram(a: usize, gap: usize, b: usize) -> SkipScheme {
+pub fn skipgram(a: usize, gap: (usize, usize), b: usize) -> SkipScheme {
     SkipScheme {
         group_a: (a, a),
-        gap: (gap, gap),
+        gap: gap,
         group_b: (b, b),
     }
+}
+
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+enum BookEnds {
+    Head(u64),
+    Toe(u64),
+}
+
+impl BookEnds {
+    fn uniq(&self) -> u64 {
+        match self {
+            BookEnds::Head(i) => *i,
+            BookEnds::Toe(i) => !i,
+        }
+    }
+}
+
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+pub struct BookEndsFtzr<T> {
+    head: usize,
+    toe: usize,
+    ftzr: T,
+}
+
+pub fn book_ends<Cg: CanGram>(head_toe: (usize, usize), cg: Cg) -> BookEndsFtzr<Cg> {
+    BookEndsFtzr {
+        head: head_toe.0,
+        toe: head_toe.1,
+        ftzr: cg,
+    }
+}
+
+impl<Cg: CanGram> CanGram for BookEndsFtzr<Cg> {
+    fn run<F: FnMut(u64) -> (), T: Sized + Hash + fmt::Debug>(&self, s: &[T], push_feat: &mut F) {
+        {
+            let mut pf = |n: u64| push_feat(BookEnds::Head(n).uniq());
+            if s.len() >= self.head {
+                //println!("head {:?}", &s[..self.head]);
+                self.ftzr.run(&s[..self.head], &mut pf);
+            }
+        };
+        {
+            let mut pf = |n: u64| push_feat(BookEnds::Toe(n).uniq());
+            if s.len() >= self.toe {
+                //println!("toe {:?}", &s[(s.len() - self.toe)..s.len()]);
+                self.ftzr.run(&s[(s.len() - self.toe)..s.len()], &mut pf);
+            }
+        };
+    }
+}
+
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+pub struct EmptyFtzr;
+
+impl CanGram for EmptyFtzr {
+    fn run<F: FnMut(u64) -> (), T: Sized + Hash + fmt::Debug>(&self, s: &[T], push_feat: &mut F) {}
+}
+
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+pub struct MultiFtzr<A, B> {
+    pub a: A,
+    pub b: B,
+}
+
+impl<A: CanGram, B: CanGram> CanGram for MultiFtzr<A, B> {
+    fn run<F: FnMut(u64) -> (), T: Sized + Hash + fmt::Debug>(&self, s: &[T], push_feat: &mut F) {
+        self.a.run(&s, push_feat);
+        self.b.run(&s, push_feat);
+    }
+}
+
+macro_rules! featurizers {
+    () => {
+        (EmptyFtzr)
+    };
+    ($a:expr $(, $tail:expr)*) => {{
+        MultiFtzr {
+            a: $a,
+            b: featurizers!($($tail), *),
+        }
+    }};
 }
 
 #[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
@@ -277,9 +358,9 @@ impl Featurizer for DefaultUnicode {
         F: FnMut(Token) -> (),
     {
         let mut _updt = |u| push_feat(Token(u));
-        let mut xs: Vec<u8> = Vec::with_capacity(origin.len() + 2);
+        //let mut xs: Vec<u8> = Vec::with_capacity(origin.len() + 2);
         //xs.push(0);
-        xs.extend(unidecode(&origin).as_bytes());
+        let xs = unidecode(&origin).as_bytes().to_owned();
         //xs.push('#');
         //xs.extend(origin.chars());
         //xs.push('$');
@@ -289,7 +370,96 @@ impl Featurizer for DefaultUnicode {
             gap: (0, 3),
             group_b: (2, 2),
         };
-        [ss, n_gram(2)].run(&xs, &mut _updt);
+        //ss.run(&xs, &mut _updt);
+        //book_ends((4, 4), n_gram(2))
+        featurizers![
+            SkipScheme {
+                group_a: (2, 2), //(2, 3),
+                gap: (0, 3),
+                group_b: (2, 2),
+            },
+            book_ends((4, 4), n_gram(2))
+        ]
+        .run(&xs, &mut _updt);
         origin
+    }
+}
+
+#[derive(Hash, Copy, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+pub struct AnonFtzr<
+    G_Id: Fn(Origin) -> Id,
+    G_T: Fn(&Origin) -> Vec<Tok>,
+    U_T: CanGram,
+    Origin,
+    Id,
+    Tok,
+> {
+    pub get_id: G_Id,
+    pub get_tokens: G_T,
+    pub use_tokens: U_T,
+    pub meta: PhantomData<(Origin, Id, Tok)>,
+}
+
+impl<G_Id, G_T, U_T, Origin, Id, Tok> Featurizer for AnonFtzr<G_Id, G_T, U_T, Origin, Id, Tok>
+where
+    //Feat: Hash + Debug + Ord + Clone,
+    Origin: Hash + Debug + Ord + Clone,
+    Id: Hash + Debug + Ord + Clone,
+    G_Id: Fn(Origin) -> Id,
+    G_T: Fn(&Origin) -> Vec<Tok>,
+    U_T: CanGram,
+    Tok: Sized + Hash + Debug,
+{
+    type Origin = Origin;
+    type Feat = Token;
+    type Id = Id;
+    fn push_features<F: FnMut(Self::Feat) -> ()>(
+        &self,
+        s: Self::Origin,
+        push_feat: &mut F,
+    ) -> Self::Id {
+        let mut _updt = |u| push_feat(Token(u));
+        let doc = &(self.get_tokens)(&s);
+        self.use_tokens.run(doc, &mut _updt);
+        (self.get_id)(s)
+    }
+}
+
+#[derive(Hash, Clone, PartialEq, Ord, PartialOrd, Eq, Debug)]
+pub struct Doc<Id, Tok> {
+    pub id: Id,
+    pub body: Vec<Tok>,
+}
+
+#[derive(Hash, Clone, PartialEq, Ord, PartialOrd, Eq, Debug, Copy)]
+pub struct DocFtzr<Cg: CanGram, Id, Tok> {
+    use_tokens: Cg,
+    meta: PhantomData<(Id, Tok)>,
+}
+
+impl<Cg: CanGram, Id, Tok> DocFtzr<Cg, Id, Tok> {
+    pub fn new(cg: Cg) -> Self {
+        DocFtzr {
+            use_tokens: cg,
+            meta: Default::default(),
+        }
+    }
+}
+
+impl<Cg: CanGram, Id, Tok> Featurizer for DocFtzr<Cg, Id, Tok>
+where
+    Tok: Ord + Hash + Clone + Debug,
+    Id: Ord + Hash + Clone + Debug,
+{
+    type Origin = Doc<Id, Tok>;
+    type Feat = u64;
+    type Id = Id;
+
+    fn push_features<F>(&self, origin: Doc<Id, Tok>, push_feat: &mut F) -> Self::Id
+    where
+        F: FnMut(u64) -> (),
+    {
+        self.use_tokens.run(&origin.body, push_feat);
+        origin.id
     }
 }

@@ -8,3 +8,7 @@ edition = "2018"
 
 [dependencies]
 unidecode = "0.3.0"
+fxhash = "0.2.1"
+levenshtein = "1.0.5"
+hnsw = "0.7.0"
+space = "0.11.0"

@@ -1,4 +1,5 @@
 #![allow(warnings)]
+use levenshtein::levenshtein;
 use std::cmp;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -18,7 +19,10 @@ use std::time::Instant;
 use unidecode::unidecode;
 
 mod feat;
-use feat::{DefaultAscii, DefaultUnicode, FeatEntry, Featurizer, FuzzyEntry};
+use feat::{
+    book_ends, n_gram, skipgram, AnonFtzr, BookEndsFtzr, CanGram, DefaultAscii, DefaultUnicode,
+    Doc, DocFtzr, EmptyFtzr, FeatEntry, Featurizer, FuzzyEntry, MultiFtzr, SkipScheme,
+};
 
 mod dualiter;
 use dualiter::*;
@@ -33,7 +37,7 @@ use utils::{get_entry, open_lexicon, rec_rev_str, shuffle, Entry};
 #[derive(Debug, Clone, Default)]
 struct FreqCounter<T> {
     to_sort: Vec<T>,
-    freqs: Vec<(T, usize)>,
+    freqs: Vec<(T, u32)>,
 }
 
 impl<T: Ord + fmt::Debug> FreqCounter<T> {
@@ -44,7 +48,7 @@ impl<T: Ord + fmt::Debug> FreqCounter<T> {
         }
     }
 
-    fn frequencies<'a, Items>(&'a mut self, items: Items) -> &'a mut Vec<(T, usize)>
+    fn frequencies<'a, Items>(&'a mut self, items: Items) -> &'a mut Vec<(T, u32)>
     where
         Items: Iterator<Item = T>,
     {
@@ -65,6 +69,49 @@ impl<T: Ord + fmt::Debug> FreqCounter<T> {
                         last.1 += 1;
                     } else {
                         self.freqs.push((item, 1));
+                    }
+                }
+            }
+        }
+        &mut self.freqs
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct FreqCounterWith<T> {
+    to_sort: Vec<(T, u32)>,
+    freqs: Vec<(T, u32)>,
+}
+
+impl<T: Ord + fmt::Debug> FreqCounterWith<T> {
+    fn new() -> FreqCounterWith<T> {
+        FreqCounterWith {
+            to_sort: Vec::new(),
+            freqs: Vec::new(),
+        }
+    }
+
+    fn frequencies<'a, Items>(&'a mut self, items: Items) -> &'a mut Vec<(T, u32)>
+    where
+        Items: Iterator<Item = (T, u32)>,
+    {
+        self.to_sort.clear();
+        self.freqs.clear();
+
+        self.to_sort.extend(items);
+        self.to_sort.sort_by(|a, b| a.0.cmp(&b.0));
+        let mut item_iter = self.to_sort.drain(..);
+
+        for item in item_iter {
+            match self.freqs.last_mut() {
+                None => {
+                    self.freqs.push(item);
+                }
+                Some(last) => {
+                    if last.0 == item.0 {
+                        last.1 += item.1;
+                    } else {
+                        self.freqs.push(item);
                     }
                 }
             }
@@ -175,7 +222,7 @@ impl<F: Featurizer> FuzzyIndex<F> {
     fn lookup(
         &self,
         word: &F::Origin,
-        word_fc: &mut FreqCounter<u32>,
+        word_fc: &mut FreqCounterWith<u32>,
         params: &SearchParams,
     ) -> Option<(F::Id, f64)> {
         /*let mut word_info = FuzzyEntry::new(word);
@@ -222,13 +269,15 @@ impl<F: Featurizer> FuzzyIndex<F> {
             .into_iter()
             .take(params.depth) //48
             .map(|e| {
+                let tfidf: u32 = 512 / ((e.id as f64).log2() as u32 + 1);
                 (self.all_feats[e.entry.0 as usize])
                     .entry
                     .iter()
                     .take(params.breadth)
+                    .map(move |entry| (*entry, tfidf))
             })
-            .flatten()
-            .map(|x| *x);
+            .flatten();
+        //.map(|x| *x);
         //.take(250);
         let words_freqs = word_fc.frequencies(word_idxs);
         // 74 ms
@@ -263,7 +312,7 @@ fn test_index<F: Featurizer<Origin = String, Id = String>>(lookup: &FuzzyIndex<F
     let mut wins = 0;
     let mut n_cities_done: usize = 0;
     //let n_cities = 1000;
-    let mut fc = FreqCounter::new();
+    let mut fc = FreqCounterWith::new();
     //.take(n_cities)
     let _words: Vec<_> = Iterator::collect(lookup.words.iter().map(|w| w.id.to_owned()));
     let words = shuffle(&_words);
@@ -289,11 +338,11 @@ fn test_index<F: Featurizer<Origin = String, Id = String>>(lookup: &FuzzyIndex<F
         //println!("{:?}", (city, &messed_up));
         //let e = FuzzyEntry::new(messed_up);
         let params = SearchParams {
-            depth: 48,
-            breadth: 48,
-            max_comparisons: 32,
-            return_if_gt: 80,
-            timeout_n: 15,
+            depth: 32,
+            breadth: 32,
+            max_comparisons: 64,
+            return_if_gt: 70,
+            timeout_n: 8,
         };
         if true {
             match lookup.lookup(&messed_up, &mut fc, &params) {
@@ -312,17 +361,13 @@ fn test_index<F: Featurizer<Origin = String, Id = String>>(lookup: &FuzzyIndex<F
         }
     }
     let elapsed = start.elapsed().as_micros();
-    println!(
-        "TIME EACH: {:?}",
-        elapsed / cmp::max(n_cities_done as u128, 1)
-    );
-    println!(
-        "lookup was right: {:?}",
-        (wins, n_cities_done, (wins as f32) / (n_cities_done as f32))
-    );
+
     let mut g = 0;
     let mut bad = 0;
     for (a, b, c) in incrct.into_iter() {
+        if levenshtein(&a, &c) <= levenshtein(&a, &b) {
+            wins += 1;
+        }
         let (right, messed_up, wrng) = (
             DefaultUnicode.new(a),
             DefaultUnicode.new(b),
@@ -335,13 +380,32 @@ fn test_index<F: Featurizer<Origin = String, Id = String>>(lookup: &FuzzyIndex<F
         }
     }
     println!(
-        "sim was correct: {:?}",
-        //FuzzyEntry::new("GRAN RAPIDS".to_owned()).sim(&FuzzyEntry::new("GRAND RAPIDS".to_owned()))
-        //lookup.lookup("RAPIDS".to_owned())
-        //shuffle(&[1, 2, 3, 4, 5, 6, 7])
-        //lookup.lookup(&"GRAN RAID".to_owned(), &mut fc)
-        (g as f32 / (bad + g) as f32)
+        "TIME EACH: {:?} μs",
+        elapsed / cmp::max(n_cities_done as u128, 1)
+    );
+    println!(
+        "lookup was right: {:?}",
+        (wins, n_cities_done, (wins as f32) / (n_cities_done as f32))
+    );
+    let sim_errors = 1.0 - (g as f32 / (bad + g) as f32);
+    println!("errors from sim metric: {:?}%", 100.0 * sim_errors);
+    println!(
+        "errors from lookup process: {:?}%",
+        100.0 * (1.0 - sim_errors)
     )
+}
+
+#[macro_export]
+macro_rules! featurizers {
+    () => {
+        (EmptyFtzr)
+    };
+    ($a:expr $(, $tail:expr)*) => {{
+        MultiFtzr {
+            a: $a,
+            b: featurizers!($($tail), *),
+        }
+    }};
 }
 
 fn main() {
@@ -355,7 +419,9 @@ fn main() {
     //let lookup = FuzzyIndex::new(words);
     //println!("{:?}", lookup.lookup("gra".to_owned()));
     let mut i = 0.0;
+    let k: usize = !0;
 
+    //return ();
     let path = Path::new("/home/logan/Downloads/us_cities_states_counties.csv");
 
     let display = path.display();
@@ -386,14 +452,34 @@ fn main() {
             }
         }
     }
-
+    //book_ends((2, 2), n_gram(2)).run(&[], &mut |x| {});
     //let lookup = FuzzyIndex::new(DefaultAscii, words.iter().map(|a| a.to_owned()));
+
+    /*
+    Origin: Hash + Debug + Ord + Clone,
+    Id: Hash + Debug + Ord + Clone,
+    G_Id: Fn(Origin) -> Id,
+    G_T: Fn(&Origin) -> &[Token],
+    U_T: CanGram, */
+
+    let ftzr = AnonFtzr {
+        get_id: |s: String| -> String { s },
+
+        get_tokens: |s: &String| -> Vec<u8> { unidecode(s).as_bytes().to_owned() },
+        use_tokens: featurizers![
+            skipgram(2, (0, 3), 2), //n_gram(4)
+            book_ends((4, 4), n_gram(2))
+        ],
+        meta: Default::default(),
+    };
+
     let lookup = FuzzyIndex::new(
-        DefaultUnicode,
+        ftzr,
         open_lexicon(Path::new(
             "/home/logan/Dropbox/USUABLE/en_pl_lexemes/en.txt",
         ))
-        .into_iter(),
+        .into_iter()
+        .take(100_000),
     );
     //let mut fc = FreqCounter::new();
 
