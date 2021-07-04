@@ -1,6 +1,6 @@
 use crate::dualiter::*;
 use crate::ftzrs::{CanGram, Feature};
-use crate::pointfactories::HasFeatures;
+use crate::hasfeatures::HasFeatures;
 use fxhash::FxHasher64;
 use space::MetricPoint;
 use std::cell::Cell;
