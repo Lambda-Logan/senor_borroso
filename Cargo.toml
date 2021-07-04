@@ -7,3 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+unidecode = "0.3.0"
+fxhash = "0.2.1"
+levenshtein = "1.0.5"
+hnsw = "0.8.0"
+space = "0.12.0"
+rand_pcg = "0.3.1"
+probabilistic-collections = "0.7.0"

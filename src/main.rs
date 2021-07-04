@@ -1,17 +1,14 @@
-use std::cmp;
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
+//#![allow(warnings)]
 use std::collections::HashSet;
-use std::convert::Into;
-use std::default::Default;
-use std::fmt;
 use std::fs::File;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::io::prelude::*;
+<<<<<<< HEAD
 use std::iter::FromIterator;
+=======
+>>>>>>> tok_feq_sorted_hash
 use std::path::Path;
-use std::rc::Rc;
 use std::str;
+<<<<<<< HEAD
 use std::time::Instant;
 
 mod stacksort;
@@ -218,76 +215,43 @@ impl<T: Ord + fmt::Debug + Default + Copy> FreqCounter<T> {
         &mut self.freqs[1..f + 1]
     }
 }
+=======
+use unidecode::unidecode;
 
-#[derive(Clone, Debug)]
-struct FuzzyIndex {
-    words: Vec<FuzzyEntry>,
-    toks: Vec<Entry<Tok, Vec<u32>>>,
-}
+mod testing;
+use testing::{FuzzyIndexTest, HnswTester, Testable, TrainingAtom};
 
-impl FuzzyIndex {
-    fn new<W: Iterator<Item = String>>(wrds: W) -> FuzzyIndex {
-        let words_set: HashSet<String> = Iterator::collect(wrds);
-        // sort words set???
-        let mut words: Vec<FuzzyEntry> =
-            Iterator::collect(words_set.into_iter().map(FuzzyEntry::new));
-        words.sort();
-        let mut toks_hm: HashMap<Tok, Vec<u32>> = HashMap::with_capacity(words.len());
-        let empty = Vec::new();
-        for (idx, word) in words.iter().enumerate() {
-            for tok in word.bow.iter() {
-                let v = toks_hm.entry(*tok).or_insert(empty.clone());
-                v.push(idx as u32);
-            }
-        }
-        let mut toks = Vec::with_capacity(toks_hm.len());
+mod feat;
+//use feat::{
+//    book_ends, n_gram, skipgram, AnonFtzr, BookEndsFtzr, CanGram, DefaultAscii, DefaultUnicode,
+//    Doc, DocFtzr, EmptyFtzr, FeatEntry, Featurizer, FuzzyEntry, MultiFtzr, SkipScheme,
+//};
 
-        for (tok, idxs) in toks_hm.into_iter() {
-            //println!("{:?}", idxs.len());
-            toks.push(Entry {
-                id: tok,
-                entry: shuffle(&idxs),
-            });
-        }
-        toks.sort();
-        //TODO randomize order of the Vec<u32>'s in toks??
-        println!("w t {:?}", (words.len(), toks.len()));
+mod dualiter;
+use dualiter::*;
+>>>>>>> tok_feq_sorted_hash
 
-        let mut r = FuzzyIndex {
-            words: words,
-            toks: toks,
-        };
-        //println!("{:?}", r);
-        //r.compress(55);
-        //r.compress(34);
-        r.compress(21);
-        //r.compress(13);
-        r
-    }
+mod ftzrs;
+use ftzrs::{book_ends, n_gram, skipgram, CanGram, EmptyFtzr, MultiFtzr};
 
-    fn freq_of(&self, tok: &Tok) -> usize {
-        get_entry(&self.toks, tok)
-            .map(|(_, e)| e.entry.len())
-            .unwrap_or(0)
-    }
+mod fuzzyindex;
+use fuzzyindex::{FuzzyIndex, SearchParams};
 
-    fn compress(&mut self, cuttoff: usize) {
-        let mut too_common: Vec<Entry<(usize, Tok), ()>> = Vec::with_capacity(self.toks.len());
-        let mut toks_sort: Vec<Tok> = Vec::new();
-        for (idx, word) in self.words.iter().enumerate() {
-            if word.bow.len() > cuttoff {
-                toks_sort.extend(word.bow.iter());
-                toks_sort.sort_by_cached_key(|t| self.freq_of(t));
-                for tok in toks_sort[cuttoff..].iter() {
-                    too_common.push(Entry {
-                        id: (idx, *tok),
-                        entry: (),
-                    });
-                }
-                toks_sort.clear();
-            }
-        }
+mod fuzzypoint;
+use fuzzypoint::{Counted, FuzzyPoint, Hamming, Jaccard, Labeled, Metric, SimHash, SimplePoint};
 
+mod pointfactories;
+use pointfactories::{HasFeatures, HasName};
+
+mod utils;
+use utils::{get_entry, open_lexicon, rec_rev_str, shuffle, Entry};
+//fn test_index<Ftzr: CanGram, Point: FuzzyPoint>(lookup: &FuzzyIndex<&String, Ftzr, Point>) {
+
+fn induce_typo(word: &str) -> String {
+    let mut messed_up: String = "A".to_owned();
+    messed_up.push_str(&unidecode(&word));
+
+<<<<<<< HEAD
         too_common.sort();
 
         let mut sort_slate: &mut Vec<u32> = &mut Vec::new();
@@ -358,34 +322,20 @@ impl FuzzyIndex {
 
         r
     }
+=======
+    if word.len() > 4 {
+        messed_up.insert_str(4, "E");
+    };
+    messed_up
+>>>>>>> tok_feq_sorted_hash
 }
 
-fn main() {
-    let words = vec![
-        //"zabc".to_owned(),
-        //"ab cd".to_owned(),
-        "grand ".to_owned(),
-        "grand traverse".to_owned(),
-        "traverse city".to_owned(),
-        "carson city".to_owned(),
-        //"abcde".to_owned(),
-        //"lmnop".to_owned(),
-        //"xyz".to_owned(),
-    ]
-    .into_iter();
-    //let lookup = FuzzyIndex::new(words);
-    //println!("{:?}", lookup.lookup("gra".to_owned()));
-    let mut i = 0.0;
-
-    let path = Path::new("/home/logan/Downloads/us_cities_states_counties.csv");
-
-    let display = path.display();
-
-    // Open the path in read-only mode, returns `io::Result<File>`
-    let mut file = match File::open(&path) {
-        Err(why) => panic!("couldn't open {}: {}", display, why),
-        Ok(file) => file,
+#[macro_export]
+macro_rules! featurizers {
+    () => {
+        (EmptyFtzr)
     };
+<<<<<<< HEAD
 
     // Read the file contents into a string, returns `io::Result<usize>`
     let mut s = String::new();
@@ -463,4 +413,20 @@ fn main() {
         //lookup.lookup("RAPIDS".to_owned())
         shuffle(&[1, 2, 3, 4, 5, 6, 7])
     )
+=======
+    ($a:expr $(, $tail:expr)*) => {{
+        MultiFtzr {
+            a: $a,
+            b: featurizers!($($tail), *),
+        }
+    }};
+>>>>>>> tok_feq_sorted_hash
 }
+
+//impl<T: Ord> MetricPoint for FuzzyEntry<T> {
+//    fn distance(&self, rhs: &Self) -> u64 {
+//        //space::f64_metric(1.0 - self.sim(rhs))
+//        self.ham_dist(rhs)
+//    }
+//}
+fn main() {}
