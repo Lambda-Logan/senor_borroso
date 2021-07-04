@@ -5,6 +5,7 @@ authors = ["J. Logan Dimond"]
 edition = "2018"
 license = "MPL 2.0"
 repository = "https://github.com/Lambda-Logan/senor_borroso"
+exclude = ["under_construction.rs", ]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

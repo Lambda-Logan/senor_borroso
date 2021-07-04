@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 
 use crate::ftzrs::*;
 use crate::fuzzypoint::*;
-use crate::pointfactories::*;
+use crate::hasfeatures::*;
 use crate::utils::shuffle;
 use crate::utils::{get_entry, Entry};
 

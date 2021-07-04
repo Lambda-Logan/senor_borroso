@@ -27,8 +27,8 @@ use fuzzyindex::{FuzzyIndex, SearchParams};
 mod fuzzypoint;
 use fuzzypoint::{Counted, FuzzyPoint, Hamming, Jaccard, Labeled, Metric, SimHash, SimplePoint};
 
-mod pointfactories;
-use pointfactories::{HasFeatures, HasName};
+mod hasfeatures;
+use hasfeatures::{HasFeatures, HasName};
 
 mod utils;
 use utils::{get_entry, open_lexicon, rec_rev_str, shuffle, Entry};
