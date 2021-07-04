@@ -2,7 +2,7 @@ use std::cmp;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::fs::File;
-use std::hash::{BuildHasherDefault, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 use std::io::prelude::*;
 use std::path::Path;
 use std::time::Instant;
@@ -48,7 +48,7 @@ impl<T, Id: Ord> Ord for Entry<Id, T> {
 pub fn shuffle<T: Hash + Clone>(items: &[T]) -> Vec<T> {
     let mut s = DefaultHasher::new();
     let start = Instant::now();
-    let mut make_hash = |t: T| {
+    let mut make_hash = |_t: T| {
         start.elapsed().as_nanos().hash(&mut s);
         s.finish()
     };
@@ -70,7 +70,8 @@ pub fn rec_rev_str(mut s: String) -> String {
         s
     }
 }
-
+////////////////////
+///
 pub fn open_lexicon(path: &Path) -> HashSet<String> {
     let display = path.display();
 
@@ -90,7 +91,7 @@ pub fn open_lexicon(path: &Path) -> HashSet<String> {
     Iterator::collect(s.lines().map(|x| x.to_owned()))
 }
 
-pub fn palindrome_lexicon(lx: &mut HashSet<String>) {
+fn palindrome_lexicon(lx: &mut HashSet<String>) {
     let v: Vec<String> = Iterator::collect(lx.iter().map(|s| rec_rev_str(s.to_owned())));
     lx.extend(v.into_iter());
 }

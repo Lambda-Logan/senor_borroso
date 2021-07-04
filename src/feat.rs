@@ -1,10 +1,14 @@
 use crate::dualiter::*;
 use fxhash::{FxHasher32, FxHasher64};
+use probabilistic_collections::similarity::SimHash;
+use probabilistic_collections::SipHasherBuilder;
+use space::{Hamming, MetricPoint};
 use std::cmp;
 use std::fmt;
 use std::fmt::Debug;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
+use std::mem::transmute;
 use std::str;
 use unidecode::unidecode;
 
@@ -45,6 +49,70 @@ type FnvBuildHasher = BuildHasherDefault<FnvHasher>;
 pub struct FuzzyEntry<T, Id = String> {
     pub id: Id,
     pub feats: Vec<T>,
+    simhash: u128,
+}
+
+fn hash_feature<T: Hash>(t: &T) -> u64 {
+    let mut s = FnvHasher::default();
+    t.hash(&mut s);
+    s.finish()
+}
+
+/// Calculate `u64` simhash from stream of `&str` words
+pub fn simhash_stream<W, T: Hash>(words: W) -> u64
+where
+    W: Iterator<Item = T>,
+{
+    let mut v = [0i32; 64];
+    let mut simhash: u64 = 0;
+
+    for feature in words {
+        let feature_hash: u64 = hash_feature(&feature);
+
+        for i in 0..64 {
+            let bit = (feature_hash >> i) & 1;
+            if bit == 1 {
+                v[i] = v[i].saturating_add(1);
+            } else {
+                v[i] = v[i].saturating_sub(1);
+            }
+        }
+    }
+
+    for q in 0..64 {
+        if v[q] > 0 {
+            simhash |= 1 << q;
+        }
+    }
+    simhash
+}
+
+pub fn simhash_stream_u128<W, T: Hash>(words: W) -> u128
+where
+    W: Iterator<Item = T>,
+{
+    let mut v = [0i32; 128];
+    let mut simhash: u128 = 0;
+
+    for feature in words {
+        let feature_hash: u64 = hash_feature(&feature);
+
+        for i in 0..128 {
+            let bit = (feature_hash >> i) & 1;
+            if bit == 1 {
+                v[i] = v[i].saturating_add(1);
+            } else {
+                v[i] = v[i].saturating_sub(1);
+            }
+        }
+    }
+
+    for q in 0..64 {
+        if v[q] > 0 {
+            simhash |= 1 << q;
+        }
+    }
+    simhash
 }
 
 pub type FeatEntry<F: Featurizer> = FuzzyEntry<F::Feat, F::Id>;
@@ -68,9 +136,18 @@ pub trait Featurizer {
         };
 
         vbow.sort();
+
+        let sim_a = 0;
+        //SimHash::with_hasher(SipHasherBuilder::from_seed(0, 0)).get_sim_hash(vbow.iter());
+        //SimHash::with_hasher(SipHasherBuilder::from_seed(0, 0)).get_sim_hash(vbow.iter());
+        //let sim_b = SimHash::with_hasher(SipHasherBuilder::from_seed(123456789, 123456789))
+        //    .get_sim_hash(vbow.iter());
+        let sim_b = 0; //simhash_stream(vbow.iter());
+                       //let sh = simhash_stream_u128(vbow.iter());
         let r = FuzzyEntry {
             id: id,
             feats: vbow,
+            simhash: 0, //unsafe { transmute((sim_a, sim_b)) },
         };
         r
     }
@@ -78,6 +155,7 @@ pub trait Featurizer {
 impl<T: Ord, Id> FuzzyEntry<T, Id> {
     #[inline(always)]
     pub fn sim(&self, other: &Self) -> f64 {
+        //return 1.0 / self.ham_dist(other) as f64;
         let mut n = 0;
         let mut d = 0;
         for x in DualIter::new(self.feats.iter(), other.feats.iter()) {
@@ -95,6 +173,9 @@ impl<T: Ord, Id> FuzzyEntry<T, Id> {
             return 0.0;
         }
         (n as f64 / d as f64)
+    }
+    pub fn ham_dist(&self, other: &Self) -> u64 {
+        Hamming(self.simhash).distance(&Hamming(other.simhash))
     }
 }
 
