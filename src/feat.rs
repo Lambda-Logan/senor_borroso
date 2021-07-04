@@ -1,7 +1,7 @@
 use crate::dualiter::*;
 use fxhash::{FxHasher32, FxHasher64};
-use probabilistic_collections::similarity::SimHash;
-use probabilistic_collections::SipHasherBuilder;
+//use probabilistic_collections::similarity::SimHash;
+//use probabilistic_collections::SipHasherBuilder;
 use space::{Hamming, MetricPoint};
 use std::cmp;
 use std::fmt;
