@@ -22,6 +22,8 @@ impl HasFeatures for &str {
         let mut feats: Vec<Feature> = Vec::with_capacity(10);
         {
             let mut updt = |f: Feature| feats.push(f);
+            //let chars: Vec<_> = Iterator::collect(self.chars());
+            //ftzr.run(&chars, &mut updt);
             ftzr.run(unidecode(&self).as_bytes(), &mut updt); //TODO use chars
         }
         feats

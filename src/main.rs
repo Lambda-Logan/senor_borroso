@@ -1,4 +1,4 @@
-//#![allow(warnings)]
+#![allow(warnings)]
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::prelude::*;

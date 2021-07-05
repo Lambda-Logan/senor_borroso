@@ -62,11 +62,13 @@ impl<T: Ord + Debug> FreqCounterWith<T> {
 /// ////////////////
 pub struct ScratchPad {
     fc: FreqCounterWith<u32>,
+    freq_bow: Vec<Entry<usize, (usize, Feature)>>,
 }
 impl ScratchPad {
     pub fn new() -> Self {
         ScratchPad {
             fc: FreqCounterWith::new(),
+            freq_bow: Vec::new(),
         }
     }
 }
@@ -116,6 +118,11 @@ impl<M1> SearchParams<M1> {
     }
 }
 
+pub struct Neighbor<Label> {
+    pub label: Label,
+    pub similarity: f64,
+}
+
 #[derive(Clone, Debug)]
 pub struct FuzzySearchIndex<Origin, Tok, Id, Ftzr, Point> {
     pub ftzr: Ftzr,
@@ -155,7 +162,6 @@ where
         let mut feats: Vec<Entry<Feature, Vec<u32>>> = Vec::with_capacity(feats_hm.len());
 
         for (feat, idxs) in feats_hm.into_iter() {
-            //println!("{:?}", idxs.len());
             feats.push(Entry {
                 id: feat,
                 entry: shuffle(&idxs),
@@ -194,7 +200,6 @@ where
         }
         v.reverse();
         for ctf in v {
-            println!("{:?}", ctf);
             self.compress_step(ctf);
         }
     }
@@ -246,23 +251,25 @@ where
         params: &SearchParams<M>,
     ) -> Option<(Id, f64)> {
         let point = Point::made_from(&tokens, &self.ftzr);
-        let mut freq_bow = Vec::with_capacity(point.get_sorted_features().len());
-        // 36 ms
-        freq_bow.extend(point.get_sorted_features().iter().filter_map(|a| {
-            let r = get_entry(&self.all_feats, &a).map(|(idx, e)| Entry {
-                id: e.entry.len(),
-                entry: (idx, a),
-            });
-            r
-        }));
-        freq_bow.sort();
+        sp.freq_bow.clear(); //Vec::with_capacity(point.get_sorted_features().len());
+                             // 36 ms
+        sp.freq_bow
+            .extend(point.get_sorted_features().iter().filter_map(|a| {
+                let r = get_entry(&self.all_feats, &a).map(|(idx, e)| Entry {
+                    id: e.entry.len(),
+                    entry: (idx, *a),
+                });
+                r
+            }));
+        sp.freq_bow.sort();
         // 25 μs
         let n_toks = point.get_sorted_features().len() as f64;
         let mut r: Option<(Id, f64)> = None;
         let mut max_so_far: f64 = 0.0;
 
-        let word_idxs = freq_bow
-            .into_iter()
+        let word_idxs = sp
+            .freq_bow
+            .iter()
             .take(params.depth) //48
             .map(|e| {
                 let tfidf: u32 = 512 / ((e.id as f64).log2() as u32 + 1);
