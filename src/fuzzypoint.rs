@@ -2,31 +2,47 @@ use crate::dualiter::*;
 use crate::ftzrs::{CanGram, Feature};
 use crate::hasfeatures::HasFeatures;
 use fxhash::FxHasher64;
-use space::MetricPoint;
 use std::cell::Cell;
+use std::cmp;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-pub trait FuzzyPoint {
+pub trait FromFeatures {
     fn made_from<Origin: HasFeatures, Ftzr: CanGram>(origin: &Origin, ftzr: &Ftzr) -> Self;
+}
 
+pub trait FuzzyPoint {
     fn get_sorted_features<'a>(&'a self) -> &'a [Feature];
 
     fn get_features_mut<'a>(&'a mut self) -> &'a mut Vec<Feature>;
+
+    fn len(&self) -> usize {
+        self.get_sorted_features().len()
+    }
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct SimplePoint {
-    pub feats: Vec<Feature>,
+    feats: Vec<Feature>,
 }
 
-impl FuzzyPoint for SimplePoint {
+impl SimplePoint {
+    pub fn new(feats: Vec<Feature>) -> Self {
+        let mut _feats = feats;
+        _feats.sort();
+        SimplePoint { feats: _feats }
+    }
+}
+
+impl FromFeatures for SimplePoint {
     fn made_from<Origin: HasFeatures, Ftzr: CanGram>(origin: &Origin, ftzr: &Ftzr) -> Self {
         let mut feats = origin.collect_features_with(ftzr);
         feats.sort();
         SimplePoint { feats: feats }
     }
+}
 
+impl FuzzyPoint for SimplePoint {
     fn get_sorted_features<'a>(&'a self) -> &'a [Feature] {
         &self.feats
     }
@@ -36,87 +52,37 @@ impl FuzzyPoint for SimplePoint {
     }
 }
 
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq, Hash)]
 pub struct Labeled<Point, Id = String> {
     pub label: Id,
     pub point: Point,
 }
 
-pub trait Metric<P> {
-    fn sim(&self, p1: &P, p2: &P) -> f64;
-    fn dist(&self, p1: &P, p2: &P) -> f64;
-}
-
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub struct Jaccard;
-
-impl<P: FuzzyPoint> Metric<P> for Jaccard {
-    fn dist(&self, p1: &P, p2: &P) -> f64 {
-        let sim = self.sim(p1, p2);
-        if sim > 0.0 {
-            1.0 / sim
-        } else {
-            f64::MAX
+impl<Point, Label> Labeled<Point, Label> {
+    pub fn new(label: Label, point: Point) -> Self {
+        Labeled {
+            label: label,
+            point: point,
         }
     }
 
-    #[inline(always)]
-    fn sim(&self, p1: &P, p2: &P) -> f64 {
-        //return 1.0 / self.ham_dist(other) as f64;
-        let mut n = 0;
-        let mut d = 0;
-        for x in DualIter::new(
-            p1.get_sorted_features().iter(),
-            p2.get_sorted_features().iter(),
-        ) {
-            match x {
-                AndOrOr::Both(_, _) => {
-                    d += 1;
-                    n += 1;
-                }
-                _ => {
-                    d += 1;
-                }
-            }
-        }
-        if n == 0 || d == 0 {
-            return 0.0;
-        }
-        n as f64 / d as f64
+    pub fn from_tuple(pair: (Label, Point)) -> Self {
+        Labeled::new(pair.0, pair.1)
     }
 }
 
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub struct Counted<M> {
-    pub metric: M,
-    pub tally: Rc<Cell<usize>>,
-}
-
-impl<M> Counted<M> {
-    pub fn new(m: M) -> Self {
-        Counted {
-            metric: m,
-            tally: Rc::new(Cell::new(0)),
+impl<Point> Labeled<Point, ()> {
+    pub fn anon(point: Point) -> Self {
+        Labeled {
+            label: (),
+            point: point,
         }
-    }
-}
-
-impl<P, M: Metric<P>> Metric<P> for Counted<M> {
-    fn sim(&self, p1: &P, p2: &P) -> f64 {
-        let t = self.tally.get();
-        self.tally.set(t + 1);
-        self.metric.sim(p1, p2)
-    }
-    fn dist(&self, p1: &P, p2: &P) -> f64 {
-        let t = self.tally.get();
-        self.tally.set(t + 1);
-        self.metric.dist(p1, p2)
     }
 }
 
 #[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct SimHash {
-    hash: u64,
+    pub(crate) hash: u64,
     feats: Vec<Feature>,
 }
 
@@ -183,7 +149,7 @@ where
     simhash
 }
 
-impl FuzzyPoint for SimHash {
+impl FromFeatures for SimHash {
     fn made_from<Origin: HasFeatures, Ftzr: CanGram>(origin: &Origin, ftzr: &Ftzr) -> Self {
         let mut feats: Vec<Feature> = origin.collect_features_with(ftzr);
         //feats.sort();
@@ -194,43 +160,14 @@ impl FuzzyPoint for SimHash {
             feats: feats,
         }
     }
+}
 
+impl FuzzyPoint for SimHash {
     fn get_sorted_features<'a>(&'a self) -> &'a [Feature] {
         &self.feats
     }
 
     fn get_features_mut<'a>(&'a mut self) -> &'a mut Vec<Feature> {
         &mut self.feats
-    }
-}
-#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub struct Hamming;
-
-impl Metric<SimHash> for Hamming {
-    fn sim(&self, p1: &SimHash, p2: &SimHash) -> f64 {
-        (1.0 / (self.dist(p1, p2) + 1.0)).sqrt()
-    }
-    fn dist(&self, p1: &SimHash, p2: &SimHash) -> f64 {
-        (p1.hash ^ p2.hash).count_ones() as f64
-    }
-}
-
-pub struct HnswPoint<M: Metric<P>, P: FuzzyPoint> {
-    metric: M,
-    point: P,
-}
-
-impl<P: FuzzyPoint, M: Metric<P>> HnswPoint<M, P> {
-    pub fn new(m: M, p: P) -> Self {
-        HnswPoint {
-            metric: m,
-            point: p,
-        }
-    }
-}
-
-impl<P: FuzzyPoint, M: Metric<P>> MetricPoint for HnswPoint<M, P> {
-    fn distance(&self, rhs: &Self) -> u64 {
-        self.metric.dist(&self.point, &rhs.point) as u64
     }
 }

@@ -1,13 +1,13 @@
 use std::mem;
 
 #[derive(Copy, Clone, Debug)]
-pub enum AndOrOr<T> {
+pub(crate) enum AndOrOr<T> {
     Left(T),
     Right(T),
     Both(T, T),
 }
 
-pub struct DualIter<L, T, R> {
+pub(crate) struct DualIter<L, T, R> {
     left: L,
     right: R,
     item: Option<AndOrOr<T>>,
@@ -18,7 +18,8 @@ where
     L: Iterator<Item = T>,
     R: Iterator<Item = T>,
 {
-    pub fn new(mut l: L, mut r: R) -> DualIter<L, T, R> {
+    #[inline]
+    pub(crate) fn new(mut l: L, mut r: R) -> DualIter<L, T, R> {
         let maybe_item = Self::next_left_right(&mut l, &mut r);
         DualIter {
             left: l,
@@ -26,7 +27,7 @@ where
             item: maybe_item,
         }
     }
-
+    #[inline]
     fn next_left_right(l: &mut L, r: &mut R) -> Option<AndOrOr<T>> {
         match l.next() {
             Some(x) => Some(AndOrOr::Left(x)),
@@ -98,6 +99,57 @@ where
                     return None;
                 }
             },
+        }
+    }
+}
+
+pub(crate) struct Uniq<Q, Item> {
+    iter: Q,
+    next: Option<Item>,
+}
+
+/////////////////
+/// An iterator adaptor that merges consecutive elements that are equal
+/// #EXAMPLE
+/// ```
+///     for i in Uniq::new(vec![9, 9, 2, 2, 5, 6, 6, 6, 6, 0, 1, 1, 0].iter()) {
+///         println!("{:?}", i);
+///     }
+/// /// >>> 9, 2, 5, 6, 0, 1, 0
+/// ```
+////////////////
+impl<Q, Item> Uniq<Q, Item> {
+    #[inline]
+    pub(crate) fn new(iter: Q) -> Self {
+        Uniq {
+            iter: iter,
+            next: None,
+        }
+    }
+}
+
+impl<Q: Iterator<Item = Item>, Item: Eq> Iterator for Uniq<Q, Item> {
+    type Item = Item;
+    #[inline(always)]
+    fn next(&mut self) -> Option<Item> {
+        match &self.next {
+            None => {
+                let a = self.iter.next();
+                let mut b = self.iter.next();
+                while b.is_some() && b == a {
+                    b = self.iter.next();
+                }
+                self.next = b;
+                a
+            }
+            some_a => {
+                let mut x = self.iter.next();
+                while x.is_some() && &x == some_a {
+                    x = self.iter.next();
+                }
+                mem::swap(&mut x, &mut self.next);
+                x
+            }
         }
     }
 }

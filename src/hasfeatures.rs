@@ -2,18 +2,22 @@ use crate::ftzrs::*;
 use crate::fuzzypoint::*;
 use unidecode::unidecode;
 
+use std::collections::{HashMap, HashSet};
+
 use std::fmt::Debug;
 use std::hash::{BuildHasherDefault, Hash, Hasher};
 use std::marker::PhantomData;
+
+
 
 pub trait HasFeatures {
     type Tok: Sized + Hash + Debug;
     fn collect_features_with<F: CanGram>(&self, ftzr: &F) -> Vec<Feature>;
 }
 
-pub trait HasName {
-    type Id: Eq + Clone + Hash;
-    fn name(&self) -> Self::Id;
+pub trait HasLabel {
+    type Label: Eq + Clone + Hash;
+    fn label(&self) -> Self::Label;
 }
 
 impl HasFeatures for &str {
@@ -22,17 +26,15 @@ impl HasFeatures for &str {
         let mut feats: Vec<Feature> = Vec::with_capacity(10);
         {
             let mut updt = |f: Feature| feats.push(f);
-            //let chars: Vec<_> = Iterator::collect(self.chars());
-            //ftzr.run(&chars, &mut updt);
             ftzr.run(unidecode(&self).as_bytes(), &mut updt); //TODO use chars
         }
         feats
     }
 }
 
-impl HasName for &str {
-    type Id = Self;
-    fn name(&self) -> Self {
+impl HasLabel for &str {
+    type Label = Self;
+    fn label(&self) -> Self {
         self
     }
 }
@@ -44,9 +46,9 @@ impl HasFeatures for String {
     }
 }
 
-impl HasName for String {
-    type Id = Self;
-    fn name(&self) -> Self {
+impl HasLabel for String {
+    type Label = Self;
+    fn label(&self) -> Self {
         self.to_owned()
     }
 }
@@ -58,9 +60,9 @@ impl HasFeatures for &String {
     }
 }
 
-impl HasName for &String {
-    type Id = String;
-    fn name(&self) -> Self::Id {
+impl HasLabel for &String {
+    type Label = String;
+    fn label(&self) -> Self::Label {
         self.to_string()
     }
 }
@@ -74,5 +76,55 @@ impl<Tok: Sized + Hash + Debug> HasFeatures for [Tok] {
             ftzr.run(&self, &mut updt);
         }
         feats
+    }
+}
+
+impl<Tok: Sized + Hash + Debug> HasFeatures for &[Tok] {
+    type Tok = Tok;
+    fn collect_features_with<F: CanGram>(&self, ftzr: &F) -> Vec<Feature> {
+        let mut feats: Vec<Feature> = Vec::with_capacity(self.len());
+        {
+            let mut updt = |f: Feature| feats.push(f);
+            ftzr.run(&self, &mut updt);
+        }
+        feats
+    }
+}
+
+impl<Tok: Sized + Hash + Debug, const N: usize> HasFeatures for [Tok; N] {
+    type Tok = Tok;
+    fn collect_features_with<F: CanGram>(&self, ftzr: &F) -> Vec<Feature> {
+        let mut feats: Vec<Feature> = Vec::with_capacity(self.len());
+        {
+            let mut updt = |f: Feature| feats.push(f);
+            ftzr.run(self, &mut updt);
+        }
+        feats
+    }
+}
+
+impl<Tok: Sized + Hash + Debug, const N: usize> HasFeatures for &[Tok; N] {
+    type Tok = Tok;
+    fn collect_features_with<F: CanGram>(&self, ftzr: &F) -> Vec<Feature> {
+        let mut feats: Vec<Feature> = Vec::with_capacity(self.len());
+        {
+            let mut updt = |f: Feature| feats.push(f);
+            ftzr.run(*self, &mut updt);
+        }
+        feats
+    }
+}
+
+impl<T: HasFeatures, Label> HasFeatures for Labeled<T, Label> {
+    type Tok = <T as HasFeatures>::Tok;
+    fn collect_features_with<F: CanGram>(&self, ftzr: &F) -> Vec<Feature> {
+        self.point.collect_features_with(ftzr)
+    }
+}
+
+impl<Point, Label: Eq + Hash + Clone> HasLabel for Labeled<Point, Label> {
+    type Label = Label;
+    fn label(&self) -> Self::Label {
+        self.label.clone()
     }
 }

@@ -4,11 +4,32 @@ use std::time::Instant;
 use hnsw::{Hnsw, Searcher};
 use levenshtein::levenshtein;
 use rand_pcg::Pcg64;
-use space::Neighbor;
+use space::{MetricPoint, Neighbor};
 
 use crate::ftzrs::*;
 use crate::fuzzyindex::*;
 use crate::fuzzypoint::*;
+use crate::metrics::{Counted, Metric};
+
+pub struct HnswPoint<M: Metric<P>, P: FuzzyPoint> {
+    metric: M,
+    point: P,
+}
+
+impl<P: FuzzyPoint, M: Metric<P>> HnswPoint<M, P> {
+    pub fn new(m: M, p: P) -> Self {
+        HnswPoint {
+            metric: m,
+            point: p,
+        }
+    }
+}
+
+impl<P: FuzzyPoint, M: Metric<P>> MetricPoint for HnswPoint<M, P> {
+    fn distance(&self, rhs: &Self) -> u64 {
+        self.metric.dist(&self.point, &rhs.point) as u64
+    }
+}
 
 #[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq)]
 pub struct TrainingAtom<T> {
@@ -88,29 +109,38 @@ pub trait Testable {
     }
 }
 
-pub struct FuzzyIndexTest<Ftzr: CanGram, P: FuzzyPoint, M: Metric<P>> {
+pub struct FuzzyIndexTest<'a, Ftzr: CanGram, P: FuzzyPoint, M: Metric<P>> {
     pub lookup: FuzzyIndex<String, Ftzr, P>,
     pub params: SearchParams<M>,
-    sp: ScratchPad,
+    sp: &'a mut ScratchPad,
 }
 
-impl<Ftzr: CanGram, P: FuzzyPoint, M: Metric<P>> FuzzyIndexTest<Ftzr, P, M> {
-    pub fn new(lookup: FuzzyIndex<String, Ftzr, P>, params: SearchParams<M>) -> Self {
+impl<'a, Ftzr: CanGram, P: FuzzyPoint, M: Metric<P>> FuzzyIndexTest<'a, Ftzr, P, M> {
+    pub fn new(
+        lookup: FuzzyIndex<String, Ftzr, P>,
+        params: SearchParams<M>,
+        sp: &'a mut ScratchPad,
+    ) -> Self {
         FuzzyIndexTest {
             lookup: lookup,
             params: params,
-            sp: ScratchPad::new(),
+            sp: sp,
         }
     }
 }
 
-impl<Ftzr: CanGram, P: FuzzyPoint, M: Metric<P> + Clone> Testable for FuzzyIndexTest<Ftzr, P, M> {
+impl<'a, Ftzr: CanGram, P: FuzzyPoint + FromFeatures, M: Metric<P> + Clone> Testable
+    for FuzzyIndexTest<'a, Ftzr, P, M>
+{
     type Item = String;
     fn fix_error(&mut self, typo: &String) -> String {
         let pair = self
             .lookup
-            .best_match(typo.to_owned(), &mut self.sp, &self.params);
-        pair.unwrap_or(("".to_owned(), 0.0)).0
+            .neighbors_of(typo.to_owned(), &mut self.sp, &self.params)
+            .nearest();
+        //.best_match(typo.to_owned(), &mut self.sp, &self.params);
+        //pair.unwrap_or(("".to_owned(), 0.0)).0
+        pair.map(|n| n.label.to_owned()).unwrap_or("".to_owned())
     }
     fn is_false_negative(&self, ta: &TrainingAtom<String>, a: &String) -> bool {
         levenshtein(&ta.correct, &ta.typo) >= levenshtein(&ta.correct, a)
@@ -131,7 +161,7 @@ impl<Ftzr: CanGram, P: FuzzyPoint, M: Metric<P> + Clone> Testable for FuzzyIndex
         let mut total = 1;
         for ta in data {
             self.lookup
-                .best_match(ta.typo.clone(), &mut self.sp, &params);
+                .neighbors_of(ta.typo.clone(), &mut self.sp, &params);
             total += 1;
         }
         params.metric.tally.get() as f32 / (total as f32)
@@ -156,7 +186,7 @@ pub struct HnswTester<
 impl<
         Ftzr: CanGram,
         Mtrc: Clone + Metric<Point>,
-        Point: FuzzyPoint,
+        Point: FuzzyPoint + FromFeatures,
         const M: usize,
         const M0: usize,
     > HnswTester<Ftzr, Mtrc, Point, M, M0>
@@ -182,7 +212,7 @@ impl<
 impl<
         Ftzr: CanGram,
         Mtrc: Clone + Metric<Point>,
-        Point: FuzzyPoint,
+        Point: FuzzyPoint + FromFeatures,
         const M: usize,
         const M0: usize,
     > Testable for HnswTester<Ftzr, Mtrc, Point, M, M0>
@@ -237,5 +267,27 @@ impl<
         let p_a = Point::made_from(a, &self.ftzr);
         let p_b = Point::made_from(b, &self.ftzr);
         self.metric.sim(&p_a, &p_b)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialOrd, Ord, PartialEq, Eq, Default)]
+pub(crate) struct StatsPad<T: Default + Clone> {
+    pub(crate) called: usize,
+    pub(crate) input_features: T,
+    pub(crate) input_features_unique: T,
+    pub(crate) nbrs_total: T,
+    pub(crate) nbrs_unique: T,
+}
+
+impl StatsPad<usize> {
+    pub(crate) fn average(&self) -> StatsPad<f32> {
+        let n = self.called as f32;
+        StatsPad {
+            called: self.called,
+            input_features: self.input_features as f32 / n,
+            input_features_unique: self.input_features_unique as f32 / n,
+            nbrs_total: self.nbrs_total as f32 / n,
+            nbrs_unique: self.nbrs_unique as f32 / n,
+        }
     }
 }
